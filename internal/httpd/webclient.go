@@ -219,10 +219,9 @@ type clientSharesPage struct {
 
 type clientSharePage struct {
 	baseClientPage
-	Share                 *dataprovider.Share
-	Error                 *util.I18nError
-	IsAdd                 bool
-	DefaultExpirationDays int
+	Share *dataprovider.Share
+	Error *util.I18nError
+	IsAdd bool
 }
 
 type userQuotaUsage struct {
@@ -744,18 +743,11 @@ func (s *httpdServer) renderAddUpdateSharePage(w http.ResponseWriter, r *http.Re
 	if share.IsPasswordHashed() {
 		share.Password = redactedSecret
 	}
-	defaultExpirationDays := 0
-	if v := os.Getenv("SFTPGO_SHARE_DEFAULT_EXPIRY_DAYS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			defaultExpirationDays = n
-		}
-	}
 	data := clientSharePage{
-		baseClientPage:        s.getBaseClientPageData(title, currentURL, w, r),
-		Share:                 share,
-		Error:                 err,
-		IsAdd:                 isAdd,
-		DefaultExpirationDays: defaultExpirationDays,
+		baseClientPage: s.getBaseClientPageData(title, currentURL, w, r),
+		Share:          share,
+		Error:          err,
+		IsAdd:          isAdd,
 	}
 
 	renderClientTemplate(w, templateClientShare, data)
