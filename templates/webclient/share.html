@@ -216,10 +216,6 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             //{{ if gt .Share.ExpiresAt 0 }}
             let input_dt = moment('{{.Share.ExpiresAt }}', 'x').format('YYYY-MM-DD');
             picker.setDate(input_dt, true);
-            //{{ else if and .IsAdd (gt .DefaultExpirationDays 0) }}
-            var defaultExpiry = new Date();
-            defaultExpiry.setDate(defaultExpiry.getDate() + {{.DefaultExpirationDays}});
-            picker.setDate(defaultExpiry, true);
             //{{ end }}
 
             $('#id_expiration_clear').on("click", function(e){
