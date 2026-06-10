@@ -50,6 +50,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     <tr class="text-start text-muted fw-bold fs-6 gs-0">
                         <th data-i18n="general.name">Name</th>
                         <th data-i18n="share.scope">Scope</th>
+                        <th>Created</th>
                         <th data-i18n="general.info">Info</th>
                         <th class="min-w-100px"></th>
                     </tr>
@@ -315,6 +316,25 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         }
                     },
                     {
+                        data: "created_at",
+                        defaultContent: 0,
+                        searchable: false,
+                        render: function(data, type, row) {
+                            if (type === 'display') {
+                                if (data && data > 0) {
+                                    return $.t('general.datetime', {
+                                        val: new Date(data),
+                                        formatParams: {
+                                            val: { year: 'numeric', month: 'numeric', day: 'numeric' },
+                                        }
+                                    });
+                                }
+                                return '';
+                            }
+                            return data;
+                        }
+                    },
+                    {
                         data: "expires_at",
                         defaultContent: 0,
                         searchable: false,
@@ -414,7 +434,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     zeroRecords: "",
                     emptyTable: $.t('share.no_share')
                 },
-                order: [[1, 'asc']],
+                order: [[2, 'desc']],
                 initComplete: function(settings, json) {
                     $('#loader').addClass("d-none");
                     $('#card_content').removeClass("d-none");
