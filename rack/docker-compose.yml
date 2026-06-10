@@ -1,0 +1,48 @@
+services:
+  sftpgo:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: sftpgo
+    restart: unless-stopped
+    ports:
+      - "2222:2222"
+      - "443:443"
+      - "${ADMIN_BIND_IP}:8081:8081"
+    environment:
+      - SFTPGO_SFTPD__BINDINGS__0__PORT=2222
+      - SFTPGO_SFTPD__CIPHERS=aes128-gcm@openssh.com,aes256-ctr,aes128-ctr
+      - SFTPGO_HTTPD__BINDINGS__0__PORT=8081
+      - SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_ADMIN=true
+      - SFTPGO_HTTPD__BINDINGS__0__ENABLE_WEB_CLIENT=true
+      - SFTPGO_HTTPD__BINDINGS__1__PORT=443
+      - SFTPGO_HTTPD__BINDINGS__1__ENABLE_WEB_ADMIN=false
+      - SFTPGO_HTTPD__BINDINGS__1__ENABLE_WEB_CLIENT=true
+      - SFTPGO_HTTPD__BINDINGS__1__ENABLE_HTTPS=true
+      - SFTPGO_HTTPD__BINDINGS__1__CERTIFICATE_FILE=/var/lib/sftpgo/certs/${ACME_DOMAIN}.crt
+      - SFTPGO_HTTPD__BINDINGS__1__CERTIFICATE_KEY_FILE=/var/lib/sftpgo/certs/${ACME_DOMAIN}.key
+      - SFTPGO_ACME__DOMAINS=${ACME_DOMAIN}
+      - SFTPGO_ACME__EMAIL=${ACME_EMAIL}
+      - SFTPGO_DATA_PROVIDER__DRIVER=sqlite
+      - SFTPGO_DATA_PROVIDER__NAME=/var/lib/sftpgo/sftpgo.db
+      - SFTPGO_COMMON__DEFENDER__ENABLED=true
+      - SFTPGO_COMMON__DEFENDER__THRESHOLD=5
+      - SFTPGO_COMMON__DEFENDER__BAN_TIME=30
+      - SFTPGO_COMMON__DEFENDER__BAN_TIME_INCREMENT=50
+      - SFTPGO_COMMON__DEFENDER__MAX_HOSTS=1000
+      - SFTPGO_COMMON__DEFENDER__SAFE_LIST_FILE=/var/lib/sftpgo/safelist.txt
+      - SFTPGO_COMMON__UPLOAD_MODE=2
+      - SFTPGO_HTTPD__MAX_UPLOAD_FILE_SIZE=0
+      - SFTPGO_SHARE_DEFAULT_EXPIRY_DAYS=${SFTPGO_SHARE_DEFAULT_EXPIRY_DAYS:-}
+    volumes:
+      - ${STORAGEPOOL_PATH}:/srv/sftpgo/data
+      - ${DATA_PATH}:/var/lib/sftpgo
+    user: "${SFTPGO_UID}:${SFTPGO_GID}"
+    logging:
+      driver: journald
+      options:
+        tag: sftpgo
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535

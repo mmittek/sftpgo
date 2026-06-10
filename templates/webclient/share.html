@@ -216,6 +216,10 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             //{{ if gt .Share.ExpiresAt 0 }}
             let input_dt = moment('{{.Share.ExpiresAt }}', 'x').format('YYYY-MM-DD');
             picker.setDate(input_dt, true);
+            //{{ else if and .IsAdd (gt .DefaultExpirationDays 0) }}
+            var defaultExpiry = new Date();
+            defaultExpiry.setDate(defaultExpiry.getDate() + {{.DefaultExpirationDays}});
+            picker.setDate(defaultExpiry, true);
             //{{ end }}
 
             $('#id_expiration_clear').on("click", function(e){
@@ -237,6 +241,24 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 submitButton.setAttribute('data-kt-indicator', 'on');
                 submitButton.disabled = true;
             });
+            //{{ if .IsAdd }}
+            function updateShareName() {
+                var pathInputs = document.querySelectorAll('[data-repeater-item] input[name="path"]');
+                var nonEmpty = Array.from(pathInputs).map(function(i){ return i.value.trim(); }).filter(Boolean);
+                var nameField = document.getElementById('name');
+                if (nonEmpty.length === 1) {
+                    var parts = nonEmpty[0].replace(/\/+$/, '').split('/');
+                    nameField.value = parts[parts.length - 1] || '';
+                } else {
+                    nameField.value = '';
+                }
+            }
+            $(document).on('input change', '[data-repeater-item] input[name="path"]', updateShareName);
+            $(document).on('click', '[data-repeater-create], [data-repeater-delete]', function() {
+                setTimeout(updateShareName, 50);
+            });
+            updateShareName();
+            //{{ end }}
         });
 </script>
 {{- end}}
