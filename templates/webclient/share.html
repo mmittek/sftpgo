@@ -243,8 +243,10 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             });
             //{{ if .IsAdd }}
             function updateShareName() {
-                var pathInputs = document.querySelectorAll('[data-repeater-item] input[name="path"]');
-                var nonEmpty = Array.from(pathInputs).map(function(i){ return i.value.trim(); }).filter(Boolean);
+                var nonEmpty = Array.from(document.querySelectorAll('[data-repeater-item] input[name*="path"]'))
+                    .filter(function(i) { return i.offsetParent !== null; })
+                    .map(function(i) { return i.value.trim(); })
+                    .filter(Boolean);
                 var nameField = document.getElementById('name');
                 if (nonEmpty.length === 1) {
                     var parts = nonEmpty[0].replace(/\/+$/, '').split('/');
@@ -253,11 +255,11 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     nameField.value = '';
                 }
             }
-            $(document).on('input change', '[data-repeater-item] input[name="path"]', updateShareName);
+            $(document).on('input change', '[data-repeater-item] input[name*="path"]', updateShareName);
             $(document).on('click', '[data-repeater-create], [data-repeater-delete]', function() {
                 setTimeout(updateShareName, 50);
             });
-            updateShareName();
+            setTimeout(updateShareName, 50);
             //{{ end }}
         });
 </script>
