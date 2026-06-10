@@ -33,7 +33,6 @@ services:
       - SFTPGO_COMMON__DEFENDER__SAFE_LIST_FILE=/var/lib/sftpgo/safelist.txt
       - SFTPGO_COMMON__UPLOAD_MODE=2
       - SFTPGO_HTTPD__MAX_UPLOAD_FILE_SIZE=0
-      - SFTPGO_SHARE_DEFAULT_EXPIRY_DAYS=${SFTPGO_SHARE_DEFAULT_EXPIRY_DAYS:-}
     volumes:
       - ${STORAGEPOOL_PATH}:/srv/sftpgo/data
       - ${DATA_PATH}:/var/lib/sftpgo
