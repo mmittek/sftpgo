@@ -104,6 +104,10 @@ func createUserDir(w http.ResponseWriter, r *http.Request) {
 	sendAPIResponse(w, r, nil, fmt.Sprintf("Directory %q created", name), http.StatusCreated)
 }
 
+func denyWebDelete(w http.ResponseWriter, r *http.Request) {
+	sendAPIResponse(w, r, nil, "Delete operations are disabled via the web interface", http.StatusForbidden)
+}
+
 func deleteUserDir(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestSize)
 	connection, err := getUserConnection(w, r)

@@ -1516,14 +1516,14 @@ func (s *httpdServer) setupRESTAPIRoutes() {
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
 				Patch(userDirsPath, renameUserFsEntry)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
-				Delete(userDirsPath, deleteUserDir)
+				Delete(userDirsPath, denyWebDelete)
 			router.With(s.checkAuthRequirements).Get(userFilesPath, getUserFile)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
 				Post(userFilesPath, uploadUserFiles)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
 				Patch(userFilesPath, renameUserFsEntry)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
-				Delete(userFilesPath, deleteUserFile)
+				Delete(userFilesPath, denyWebDelete)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
 				Post(userFileActionsPath+"/move", renameUserFsEntry)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled)).
@@ -1635,13 +1635,13 @@ func (s *httpdServer) setupWebClientRoutes() {
 				Post(webClientExistPath, s.handleClientCheckExist)
 			router.With(s.checkAuthRequirements, s.refreshCookie).Get(webClientEditFilePath, s.handleClientEditFile)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).
-				Delete(webClientFilesPath, deleteUserFile)
+				Delete(webClientFilesPath, denyWebDelete)
 			router.With(s.checkAuthRequirements, compressor.Handler, s.refreshCookie).
 				Get(webClientDirsPath, s.handleClientGetDirContents)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).
 				Post(webClientDirsPath, createUserDir)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).
-				Delete(webClientDirsPath, taskDeleteDir)
+				Delete(webClientDirsPath, denyWebDelete)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).
 				Post(webClientFileActionsPath+"/move", taskRenameFsEntry)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).
