@@ -88,7 +88,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         Select across pages
                     </label>
                 </div>
-                {{- if or .CanDownload .CanDelete}}
+                {{- if .CanDownload}}
                 <div>
                     <button type="button" class="btn btn-light-primary rotate" data-kt-menu-trigger="click" data-kt-menu-placement="bottom">
                         <span data-i18n="general.actions">Actions</span>
@@ -117,13 +117,6 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                             </a>
                         </div>
                         {{- end}}
-                        {{- end}}
-                        {{- if .CanDelete}}
-                        <div class="menu-item px-3">
-                            <a data-i18n="general.delete" href="#" class="menu-link px-3 text-danger fs-6" data-kt-filemanager-table-select="delete_selected">
-                                Delete
-                            </a>
-                        </div>
                         {{- end}}
                     </div>
                 </div>
@@ -747,7 +740,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                     }
                                 }
                                 let more = `{{- if not .ShareUploadBaseURL}}
-                                            {{- if or .CanRename .CanAddFiles .CanShare .CanDelete }}
+                                            {{- if or .CanRename .CanAddFiles .CanShare }}
                                             <div class="ms-2">
 												<button type="button" class="btn btn-sm btn-icon btn-light btn-active-light-primary" data-kt-menu-trigger="click" data-kt-menu-placement="bottom-end">
 													<i class="ki-duotone ki-dots-square fs-5 m-0">
@@ -771,11 +764,6 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                                     {{- if .CanShare}}
                                                     <div class="menu-item px-3">
 														<a data-i18n="fs.share" href="#" class="menu-link px-3" data-kt-filemanager-table-action="share">Share</a>
-													</div>
-                                                    {{- end}}
-                                                    {{- if .CanDelete}}
-													<div class="menu-item px-3">
-														<a data-i18n="general.delete" href="#" class="menu-link text-danger px-3" data-kt-filemanager-table-action="delete">Delete</a>
 													</div>
                                                     {{- end}}
 											    </div>
