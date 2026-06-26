@@ -2121,6 +2121,10 @@ func getUserFromPostFields(r *http.Request) (dataprovider.User, error) {
 		return user, err
 	}
 	filters.TLSCerts = r.Form["tls_certs"]
+	defaultSharesTokens, err := strconv.Atoi(r.Form.Get("default_shares_tokens"))
+	if err != nil {
+		return user, fmt.Errorf("invalid default shares tokens: %w", err)
+	}
 	user = dataprovider.User{
 		BaseUser: sdk.BaseUser{
 			Username:             strings.TrimSpace(r.Form.Get("username")),
@@ -2149,6 +2153,7 @@ func getUserFromPostFields(r *http.Request) (dataprovider.User, error) {
 			BaseUserFilters:       filters,
 			RequirePasswordChange: r.Form.Get("require_password_change") != "",
 			AdditionalEmails:      r.Form["additional_emails"],
+			DefaultSharesTokens:   defaultSharesTokens,
 		},
 		VirtualFolders: getVirtualFoldersFromPostFields(r),
 		FsConfig:       fsConfig,

@@ -1442,7 +1442,7 @@ func (s *httpdServer) handleClientAddShareGet(w http.ResponseWriter, r *http.Req
 			util.NewI18nError(err, util.I18nErrorGetUser), "")
 		return
 	}
-	share := &dataprovider.Share{Scope: dataprovider.ShareScopeRead}
+	share := &dataprovider.Share{Scope: dataprovider.ShareScopeRead, MaxTokens: user.Filters.DefaultSharesTokens}
 	if user.Filters.DefaultSharesExpiration > 0 {
 		share.ExpiresAt = util.GetTimeAsMsSinceEpoch(time.Now().Add(24 * time.Hour * time.Duration(user.Filters.DefaultSharesExpiration)))
 	} else if user.Filters.MaxSharesExpiration > 0 {
