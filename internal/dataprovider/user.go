@@ -125,6 +125,8 @@ type UserFilters struct {
 	sdk.BaseUserFilters
 	// User must change password from WebClient/REST API at next login.
 	RequirePasswordChange bool `json:"require_password_change,omitempty"`
+	// DefaultSharesTokens defines the default max tokens for new shares created by this user (0 means unlimited).
+	DefaultSharesTokens int `json:"default_shares_tokens,omitempty"`
 	// AdditionalEmails defines additional email addresses
 	AdditionalEmails []string `json:"additional_emails,omitempty"`
 	// Time-based one time passwords configuration
@@ -1802,6 +1804,7 @@ func (u *User) getACopy() User {
 		BaseUserFilters: copyBaseUserFilters(u.Filters.BaseUserFilters),
 	}
 	filters.RequirePasswordChange = u.Filters.RequirePasswordChange
+	filters.DefaultSharesTokens = u.Filters.DefaultSharesTokens
 	filters.TOTPConfig.Enabled = u.Filters.TOTPConfig.Enabled
 	filters.TOTPConfig.ConfigName = u.Filters.TOTPConfig.ConfigName
 	filters.TOTPConfig.Secret = u.Filters.TOTPConfig.Secret.Clone()

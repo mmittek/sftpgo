@@ -87,7 +87,7 @@ func addShare(w http.ResponseWriter, r *http.Request) {
 		sendAPIResponse(w, r, err, "Unable to retrieve your user", getRespStatus(err))
 		return
 	}
-	var share dataprovider.Share
+	share := dataprovider.Share{MaxTokens: user.Filters.DefaultSharesTokens}
 	if user.Filters.DefaultSharesExpiration > 0 {
 		share.ExpiresAt = util.GetTimeAsMsSinceEpoch(time.Now().Add(24 * time.Hour * time.Duration(user.Filters.DefaultSharesExpiration)))
 	}
