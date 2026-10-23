@@ -125,21 +125,23 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     <div id="linkFile" class="share-link-section">
                         <h4>Single file</h4>
                         <p>The landing page shows a preview with a Download button. The direct download link starts the download right away.</p>
-                        <input id="readDirectURL" type="text" class="form-control form-control-solid fs-7 mb-4" readonly aria-label="Direct download link" />
-                        <div class="d-flex flex-wrap gap-3">
-                            <button id="readLandingCopy" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy" data-copy-label="Landing page">
-                                <i class="ki-duotone ki-fasten fs-2">
-                                    <span class="path1"></span>
-                                    <span class="path2"></span>
-                                </i>
-                                <span class="copy-label">Landing page</span>
-                            </button>
+                        <div class="input-group mb-3">
+                            <input id="readDirectURL" type="text" class="form-control form-control-solid fs-7" readonly aria-label="Direct download link" />
                             <button id="readDirectCopy" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy" data-copy-label="Direct download link">
                                 <i class="ki-duotone ki-fasten fs-2">
                                     <span class="path1"></span>
                                     <span class="path2"></span>
                                 </i>
                                 <span class="copy-label">Direct download link</span>
+                            </button>
+                        </div>
+                        <div class="d-flex flex-column align-items-start gap-3">
+                            <button id="readLandingCopy" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy" data-copy-label="Landing page">
+                                <i class="ki-duotone ki-fasten fs-2">
+                                    <span class="path1"></span>
+                                    <span class="path2"></span>
+                                </i>
+                                <span class="copy-label">Landing page</span>
                             </button>
                             <a id="readDirectDownload" href="#" class="btn btn-flex btn-primary">
                                 <i class="ki-duotone ki-folder-down fs-2">
