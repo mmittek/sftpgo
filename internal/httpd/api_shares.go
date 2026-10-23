@@ -586,6 +586,7 @@ func getUserForShare(share dataprovider.Share) (dataprovider.User, error) {
 			util.I18nError403Message,
 		)
 	}
+	user.Filters.FilePatterns = hideDotEntriesInShares(user.Filters.FilePatterns)
 	return user, nil
 }
 

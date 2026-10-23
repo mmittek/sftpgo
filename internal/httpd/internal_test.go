@@ -4909,3 +4909,29 @@ func TestSharePreviewPeaksAndDuration(t *testing.T) {
 	img := renderWaveform(peaks, 300, 100)
 	assert.Equal(t, 300, img.Bounds().Dx())
 }
+
+func TestHideDotEntriesInShares(t *testing.T) {
+	user := dataprovider.User{}
+	user.Filters.FilePatterns = hideDotEntriesInShares(nil)
+	for _, p := range []string{"/.cache", "/a/.cache", "/a/.cache/x.mp3", "/a/.DS_Store", "/a/._x.wav", "/.tmp/b/c.mov"} {
+		ok, policy := user.IsFileAllowed(p)
+		assert.False(t, ok, p)
+		assert.Equal(t, sdk.DenyPolicyHide, policy, p)
+	}
+	for _, p := range []string{"/a/b.wav", "/a.b/c.mov", "/a/b/c..d.jpg"} {
+		ok, _ := user.IsFileAllowed(p)
+		assert.True(t, ok, p)
+	}
+	// an existing allow list keeps working but cannot let dot names through
+	original := []sdk.PatternsFilter{{Path: "/storagepool", AllowedPatterns: []string{"*.wav", "?.mov", ".htaccess"}}}
+	user.Filters.FilePatterns = hideDotEntriesInShares(original)
+	assert.Equal(t, []string{"*.wav", "?.mov", ".htaccess"}, original[0].AllowedPatterns, "the cached rules must not change")
+	for p, expected := range map[string]bool{
+		"/storagepool/mix.wav": true, "/storagepool/a.mov": true, "/storagepool/.x.wav": false,
+		"/storagepool/.htaccess": false, "/storagepool/notes.txt": false, "/other/.hidden": false, "/other/file.txt": true,
+	} {
+		ok, _ := user.IsFileAllowed(p)
+		assert.Equal(t, expected, ok, p)
+	}
+	assert.Equal(t, []string{""}, excludeDotNames([]string{".env"}))
+}
