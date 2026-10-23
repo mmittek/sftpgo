@@ -98,7 +98,8 @@ health_check() {
     done
     local errors
     errors=$(journalctl -t sftpgo --since "-1 min" --no-pager -o cat 2>/dev/null \
-        | grep '"level":"error"' | grep -v '"sender":"connection_failed"' || true)
+        | grep '"level":"error"' | grep -v '"sender":"connection_failed"' \
+        | grep -v 'CSRF token: no token found' || true)
     if [ -n "$errors" ]; then
         log "errors logged since the start:"
         echo "$errors" | cut -c1-300 | head -10
