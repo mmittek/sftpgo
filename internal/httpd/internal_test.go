@@ -4935,3 +4935,21 @@ func TestHideDotEntriesInShares(t *testing.T) {
 	}
 	assert.Equal(t, []string{""}, excludeDotNames([]string{".env"}))
 }
+
+func TestSharePreviewPhotoMetadata(t *testing.T) {
+	assert.Equal(t, "Sony ILCE-7M5", formatCamera("SONY", "ILCE-7M5"))
+	assert.Equal(t, "Canon EOS R5", formatCamera("Canon", "Canon EOS R5"))
+	assert.Equal(t, "Nikon Z 8", formatCamera("NIKON CORPORATION", "Z 8"))
+	assert.Equal(t, "DJI", formatCamera("DJI", ""))
+	assert.Equal(t, "", formatCamera("", ""))
+	assert.Equal(t, "Sony FE 24-105mm F4 G OSS", formatLens("Sony FE 24-105mm F4 G OSS"))
+	assert.Equal(t, "", formatLens("Unknown (00 0 0)"))
+	assert.Equal(t, "", formatLens("----"))
+	assert.Equal(t, "", formatLens(65535.0))
+	w, h := parseImageSize("7008 4672")
+	assert.Equal(t, []int{7008, 4672}, []int{w, h})
+	w, h = parseImageSize("3214x1808")
+	assert.Equal(t, []int{3214, 1808}, []int{w, h})
+	w, _ = parseImageSize(nil)
+	assert.Equal(t, 0, w)
+}

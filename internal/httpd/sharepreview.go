@@ -47,7 +47,7 @@ const (
 	// version of the generated assets, bump it to regenerate every preview after changing a recipe
 	sharePreviewAssetsVersion = "3"
 	// version of the probe alone: adding details redoes only the small probe files
-	sharePreviewProbeVersion = "2"
+	sharePreviewProbeVersion = "3"
 	sharePreviewCacheDir     = ".cache"
 	sharePreviewProbeSuffix  = ".probe.json"
 	sharePreviewThumbSuffix  = ".thumb.jpg"
@@ -64,12 +64,20 @@ var (
 	sharePreviewExts = map[string]string{
 		".jpg": sharePreviewImage, ".jpeg": sharePreviewImage, ".png": sharePreviewImage,
 		".webp": sharePreviewImage, ".gif": sharePreviewImage,
+		".dng": sharePreviewImage, ".arw": sharePreviewImage, ".cr2": sharePreviewImage, ".cr3": sharePreviewImage,
+		".nef": sharePreviewImage, ".raf": sharePreviewImage, ".orf": sharePreviewImage, ".rw2": sharePreviewImage,
 		".wav": sharePreviewAudio, ".mp3": sharePreviewAudio, ".m4a": sharePreviewAudio,
 		".flac": sharePreviewAudio, ".aif": sharePreviewAudio, ".aiff": sharePreviewAudio,
 		".ogg": sharePreviewAudio, ".opus": sharePreviewAudio,
 		".mov": sharePreviewVideo, ".mp4": sharePreviewVideo, ".m4v": sharePreviewVideo,
 		".webm": sharePreviewVideo,
 	}
+	// camera raw formats: the preview is the JPEG rendering embedded in the file
+	sharePreviewRawExts = map[string]bool{".dng": true, ".arw": true, ".cr2": true, ".cr3": true, ".nef": true,
+		".raf": true, ".orf": true, ".rw2": true}
+	// EXIF orientation to ffmpeg filters, the embedded raw preview carries no orientation of its own
+	sharePreviewOrientations = map[int]string{2: "hflip", 3: "hflip,vflip", 4: "vflip", 5: "transpose=0",
+		6: "transpose=1", 7: "transpose=3", 8: "transpose=2"}
 	// content types of the original videos streamed to the page player
 	sharePreviewMediaTypes = map[string]string{
 		// Chrome refuses video/quicktime but plays H.264/HEVC .mov files announced as mp4
@@ -124,6 +132,10 @@ type sharePreviewProbe struct {
 	// BitDepth is set for lossless audio only, lossy codecs have no meaningful bit depth
 	BitDepth   int  `json:"bit_depth"`
 	FloatAudio bool `json:"float_audio"`
+	// photo metadata, empty when the file does not carry it
+	Camera      string `json:"camera"`
+	Lens        string `json:"lens"`
+	Orientation int    `json:"orientation"`
 	// the source this probe and the other cached assets were made from
 	SourceSize   int64  `json:"source_size"`
 	SourceMtime  int64  `json:"source_mtime"`
@@ -261,6 +273,9 @@ func (c *sharePreviewCache) loadProbe(ctx context.Context, src *sharePreviewSour
 }
 
 func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSource) error {
+	if src.kind == sharePreviewImage {
+		return c.genImageProbe(ctx, src)
+	}
 	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-print_format", "json",
 		"-show_streams", "-show_format", "file:"+src.resolved).Output()
 	if err != nil {
@@ -318,6 +333,10 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 			}
 		}
 	}
+	return c.writeProbe(src, probe)
+}
+
+func (c *sharePreviewCache) writeProbe(src *sharePreviewSource, probe sharePreviewProbe) error {
 	probe.SourceSize, probe.SourceMtime = src.info.Size(), src.info.ModTime().UnixNano()
 	probe.Version, probe.ProbeVersion = sharePreviewAssetsVersion, sharePreviewProbeVersion
 	data, err := json.Marshal(probe)
@@ -327,10 +346,102 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 	return writeFileAtomic(c.path(src, sharePreviewProbeSuffix), data)
 }
 
+// genImageProbe reads size, camera and lens with exiftool, which understands camera raw files
+func (c *sharePreviewCache) genImageProbe(ctx context.Context, src *sharePreviewSource) error {
+	out, err := exec.CommandContext(ctx, "exiftool", "-j", "-Make", "-Model", "-LensID", "-LensModel",
+		"-ImageSize#", "-DefaultCropSize#", "-Orientation#", src.resolved).Output()
+	if err != nil {
+		return fmt.Errorf("exiftool: %w", err)
+	}
+	var res []struct {
+		Make            string `json:"Make"`
+		Model           string `json:"Model"`
+		LensID          any    `json:"LensID"`
+		LensModel       any    `json:"LensModel"`
+		ImageSize       any    `json:"ImageSize"`
+		DefaultCropSize any    `json:"DefaultCropSize"`
+		Orientation     int    `json:"Orientation"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil || len(res) == 0 {
+		return fmt.Errorf("exiftool output: %w", err)
+	}
+	r := res[0]
+	var probe sharePreviewProbe
+	// raw files: the default crop is the size of the developed image, without the sensor margins
+	probe.Width, probe.Height = parseImageSize(r.DefaultCropSize)
+	if probe.Width == 0 {
+		probe.Width, probe.Height = parseImageSize(r.ImageSize)
+	}
+	probe.Orientation = r.Orientation
+	if probe.Orientation >= 5 && probe.Orientation <= 8 {
+		probe.Width, probe.Height = probe.Height, probe.Width
+	}
+	probe.Camera = formatCamera(r.Make, r.Model)
+	probe.Lens = formatLens(r.LensID)
+	if probe.Lens == "" {
+		probe.Lens = formatLens(r.LensModel)
+	}
+	return c.writeProbe(src, probe)
+}
+
+// parseImageSize reads "7008 4672" or "7008x4672"
+func parseImageSize(v any) (int, int) {
+	s, ok := v.(string)
+	if !ok {
+		return 0, 0
+	}
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == ' ' || r == 'x' })
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	w, errW := strconv.ParseFloat(parts[0], 64)
+	h, errH := strconv.ParseFloat(parts[1], 64)
+	if errW != nil || errH != nil {
+		return 0, 0
+	}
+	return int(w), int(h)
+}
+
+// formatCamera turns "SONY" + "ILCE-7M5" into "Sony ILCE-7M5", without repeating the brand
+// when the model already carries it ("Canon" + "Canon EOS R5")
+func formatCamera(brand, model string) string {
+	brand, model = strings.TrimSpace(brand), strings.TrimSpace(model)
+	if fields := strings.Fields(brand); len(fields) > 0 {
+		brand = fields[0] // "NIKON CORPORATION", "OLYMPUS IMAGING CORP."
+	}
+	// "SONY" reads better as "Sony", short acronyms like "DJI" stay as they are
+	if brand == strings.ToUpper(brand) && len(brand) > 3 {
+		brand = brand[:1] + strings.ToLower(brand[1:])
+	}
+	switch {
+	case model == "":
+		return brand
+	case brand == "" || strings.HasPrefix(strings.ToLower(model), strings.ToLower(brand)):
+		return model
+	default:
+		return brand + " " + model
+	}
+}
+
+func formatLens(v any) string {
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	s = strings.TrimSpace(s)
+	if s == "" || strings.HasPrefix(s, "Unknown") || strings.Trim(s, "-") == "" {
+		return ""
+	}
+	return s
+}
+
 func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSource) error {
 	if src.kind == sharePreviewAudio {
 		// the waveform image comes out of the audio pass together with the peaks
 		return c.genAudio(ctx, src)
+	}
+	if sharePreviewRawExts[strings.ToLower(filepath.Ext(src.resolved))] {
+		return c.genRawThumb(ctx, src)
 	}
 	args := []string{"-v", "error", "-y"}
 	box := "1600"
@@ -353,6 +464,39 @@ func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSourc
 	if out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("ffmpeg thumbnail: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return os.Rename(tmp, c.path(src, sharePreviewThumbSuffix))
+}
+
+// genRawThumb scales the JPEG rendering embedded in a camera raw file, it is what the camera
+// or the raw converter developed (edits included), decoding the sensor data would not be
+func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSource) error {
+	probe, err := c.loadProbe(ctx, src)
+	if err != nil {
+		return err
+	}
+	var embedded []byte
+	for _, tag := range []string{"-JpgFromRaw", "-PreviewImage"} {
+		out, err := exec.CommandContext(ctx, "exiftool", "-b", tag, src.resolved).Output()
+		if err == nil && len(out) > 2 && out[0] == 0xff && out[1] == 0xd8 {
+			embedded = out
+			break
+		}
+	}
+	if embedded == nil {
+		return errors.New("no embedded preview in the raw file")
+	}
+	filters := "scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease,format=yuvj420p"
+	if rotate, ok := sharePreviewOrientations[probe.Orientation]; ok {
+		filters = rotate + "," + filters
+	}
+	tmp := c.path(src, ".thumb.tmp.jpg")
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-f", "jpeg_pipe", "-i", "pipe:0",
+		"-frames:v", "1", "-vf", filters, "-q:v", "3", "-update", "1", "file:"+tmp)
+	cmd.Stdin = bytes.NewReader(embedded)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("ffmpeg raw preview: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return os.Rename(tmp, c.path(src, sharePreviewThumbSuffix))
 }
@@ -655,6 +799,11 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	switch src.kind {
 	case sharePreviewImage:
 		details = append([]string{"Image", fmt.Sprintf("%dx%d", probe.Width, probe.Height)}, details...)
+		for _, v := range []string{probe.Lens, probe.Camera} {
+			if v != "" {
+				details = append(details[:2], append([]string{v}, details[2:]...)...)
+			}
+		}
 	case sharePreviewAudio:
 		preview.MediaType = "audio/mpeg"
 		preview.PeaksURL = base + "/preview/peaks"
