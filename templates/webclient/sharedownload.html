@@ -289,7 +289,9 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         }
         audio.addEventListener('play', function () { if (!raf) raf = requestAnimationFrame(tick); });
         ['pause', 'seeked', 'loadedmetadata', 'ended'].forEach(function (e) { audio.addEventListener(e, draw); });
-        window.addEventListener('resize', draw);
+        // the page stays hidden until the translations load, peaks fetched before that would be
+        // drawn on a zero-width canvas: redraw whenever the box gets its real size
+        new ResizeObserver(draw).observe(wave);
 
         function loadPeaks(attempt) {
             fetch(wave.dataset.peaks).then(function (resp) {
