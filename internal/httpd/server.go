@@ -1641,6 +1641,8 @@ func (s *httpdServer) setupWebClientRoutes() {
 		s.router.Get(webClientPubSharesPath+"/{id}/preview/thumb", s.handleShareGetPreviewThumb)
 		s.router.Get(webClientPubSharesPath+"/{id}/preview/peaks", s.handleShareGetPreviewPeaks)
 		s.router.Get(webClientPubSharesPath+"/{id}/view", s.handleShareViewFile)
+		s.router.Get(webClientPubSharesPath+"/{id}/preview/card", s.handleSharePreviewCard)
+		s.router.Get("/robots.txt", handleRobotsTxt)
 
 		s.router.Group(func(router chi.Router) {
 			if s.binding.OIDC.isEnabled() {

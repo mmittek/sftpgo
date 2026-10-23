@@ -192,11 +192,11 @@ func (c *sharePreviewCache) dropStale(src *sharePreviewSource) {
 	}
 }
 
-// run executes fn once per name while concurrent callers wait for the same result, in the
-// interactive lane of the task manager: the job outlives the request that started it, so a
-// crawler that gives up does not waste the work for the next one
+// run executes fn once per name while concurrent callers wait for the same result, at the
+// priority of the request (share or browse): the job outlives the request that started it, so
+// a crawler that gives up does not waste the work for the next one
 func (c *sharePreviewCache) run(ctx context.Context, name string, fn func(context.Context) error) error {
-	return tasks.run(ctx, "preview", name, laneInteractive, 10*time.Minute, fn)
+	return tasks.run(ctx, "preview", name, taskPriorityFrom(ctx), 10*time.Minute, fn)
 }
 
 // ensure returns the path of a cached asset, generating it if missing
@@ -982,8 +982,10 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 		return nil
 	}
 	enqueueCacheSweep(filepath.Dir(src.resolved))
+	// the thumbnail is made at the priority of the page (share or browse), without its deadline
+	warmCtx := context.WithoutCancel(r.Context())
 	go func() {
-		_, err := sharePreviews.ensure(context.Background(), src, sharePreviewThumbSuffix, sharePreviews.genThumb)
+		_, err := sharePreviews.ensure(warmCtx, src, sharePreviewThumbSuffix, sharePreviews.genThumb)
 		if err != nil {
 			logger.Warn(logSender, "", "unable to generate share preview for %q: %v", src.name, err)
 		}
@@ -1042,6 +1044,19 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 	default:
 		preview.ThumbWidth, preview.ThumbHeight = fitInBox(probe.Width, probe.Height, 1600)
 	}
+	// link previews cache pictures by address: the share card is "pending", the real picture
+	// is versioned by its file, so a later look at the page finds the real one
+	version := "pending"
+	if info, err := os.Stat(sharePreviews.path(src, sharePreviewThumbSuffix)); err == nil {
+		version = strconv.FormatInt(info.ModTime().Unix(), 10)
+	} else {
+		preview.ThumbWidth, preview.ThumbHeight = 1200, 630
+	}
+	separator := "?"
+	if strings.Contains(preview.ThumbURL, "?") {
+		separator = "&"
+	}
+	preview.ThumbURL += separator + "v=" + version
 	return preview
 }
 
@@ -1099,6 +1114,7 @@ func (s *httpdServer) serveSharePreviewAsset(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *httpdServer) handleShareGetPreviewThumb(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withTaskPriority(r.Context(), priorityShare))
 	src, _, connection, ok := s.getSharePreviewForRequest(w, r)
 	if !ok {
 		return
@@ -1108,11 +1124,109 @@ func (s *httpdServer) handleShareGetPreviewThumb(w http.ResponseWriter, r *http.
 		s.serveListThumb(w, r, src)
 		return
 	}
+	s.serveSharePicture(w, r, src)
+}
+
+// serveSharePicture is the picture of a share page and of its link previews. Crawlers give up
+// after a few seconds: a picture not ready within 2 seconds is answered with the share card
+// while it keeps generating, the page then points to the real picture under a new address
+func (s *httpdServer) serveSharePicture(w http.ResponseWriter, r *http.Request, src *sharePreviewSource) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if _, err := sharePreviews.ensure(ctx, src, sharePreviewThumbSuffix, sharePreviews.genThumb); err != nil {
+		serveShareCard(w, r, src.kind)
+		return
+	}
 	if src.kind == sharePreviewAudio {
 		s.serveBrandedWaveform(w, r, src)
 		return
 	}
 	s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
+}
+
+// currentBrandingLogo is the web client logo set in the branding configuration, nil if none
+func currentBrandingLogo() (image.Image, time.Time) {
+	configs, err := dataprovider.GetConfigs()
+	if err != nil || configs.Branding == nil || len(configs.Branding.WebClient.Logo) == 0 {
+		return nil, time.Time{}
+	}
+	logo, _, err := image.Decode(bytes.NewReader(configs.Branding.WebClient.Logo))
+	if err != nil {
+		return nil, time.Time{}
+	}
+	return logo, util.GetTimeFromMsecSinceEpoch(configs.UpdatedAt)
+}
+
+// serveShareCard answers with the placeholder link preview, never cached by browsers
+func serveShareCard(w http.ResponseWriter, r *http.Request, kind string) {
+	logo, _ := currentBrandingLogo()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, renderShareCard(kind, logo), &jpeg.Options{Quality: 88}); err != nil {
+		sendAPIResponse(w, r, err, "", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(buf.Bytes())
+}
+
+// renderShareCard draws the placeholder picture of a share: the branding logo on the dark
+// gradient of the waveforms, with a play button for videos and soft bars for audio
+func renderShareCard(kind string, logo image.Image) *image.RGBA {
+	const width, height = 1200, 630
+	img := renderWaveform(nil, width, height).(*image.RGBA)
+	switch kind {
+	case sharePreviewAudio:
+		// decorative bars along the bottom, deterministic
+		bar, gap := 6, 4
+		for i := 0; (i+1)*(bar+gap) < width-80; i++ {
+			v := 0.35 + 0.3*math.Abs(math.Sin(float64(i)*0.37)) + 0.2*math.Abs(math.Sin(float64(i)*0.11))
+			h := int(v * 70)
+			x0 := 40 + i*(bar+gap)
+			for x := x0; x < x0+bar; x++ {
+				for y := height - 60 - h; y < height-60; y++ {
+					img.SetRGBA(x, y, color.RGBA{64, 58, 92, 255})
+				}
+			}
+		}
+	case sharePreviewVideo:
+		// a play button under the logo
+		cx, cy, radius := width/2, 470, 56
+		for y := cy - radius; y <= cy+radius; y++ {
+			for x := cx - radius; x <= cx+radius; x++ {
+				dx, dy := x-cx, y-cy
+				if dx*dx+dy*dy > radius*radius {
+					continue
+				}
+				// triangle pointing right, inside the circle
+				inTriangle := dx >= -18 && dx <= 26 && float64(absInt(dy)) <= float64(26-dx)*22.0/44.0
+				if inTriangle {
+					img.SetRGBA(x, y, color.RGBA{18, 16, 30, 255})
+				} else {
+					img.SetRGBA(x, y, color.RGBA{236, 64, 140, 255})
+				}
+			}
+		}
+	}
+	if logo != nil {
+		logoHeight := 200
+		lb := logo.Bounds()
+		logoWidth := lb.Dx() * logoHeight / max(lb.Dy(), 1)
+		top := (height - logoHeight) / 2
+		if kind == sharePreviewVideo {
+			top = 110
+		}
+		stampLogoAt(img, logo, logoHeight, (width-logoWidth)/2, top)
+	}
+	return img
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func (s *httpdServer) serveListThumb(w http.ResponseWriter, r *http.Request, src *sharePreviewSource) {
@@ -1222,6 +1336,7 @@ func (s *httpdServer) handleClientPreviewPage(w http.ResponseWriter, r *http.Req
 // handleShareViewFile opens a file inside a folder share in the preview page, files without a
 // preview are downloaded as before
 func (s *httpdServer) handleShareViewFile(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withTaskPriority(r.Context(), priorityShare))
 	validScopes := []dataprovider.ShareScope{dataprovider.ShareScopeRead, dataprovider.ShareScopeReadWrite}
 	share, connection, err := s.checkPublicShare(w, r, validScopes)
 	if err != nil {
@@ -1303,13 +1418,10 @@ func (s *httpdServer) serveBrandedWaveform(w http.ResponseWriter, r *http.Reques
 	img := image.NewRGBA(waveform.Bounds())
 	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
 	modTime := src.info.ModTime()
-	if configs, err := dataprovider.GetConfigs(); err == nil && configs.Branding != nil &&
-		len(configs.Branding.WebClient.Logo) > 0 {
-		if logo, _, err := image.Decode(bytes.NewReader(configs.Branding.WebClient.Logo)); err == nil {
-			stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
-			if updated := util.GetTimeFromMsecSinceEpoch(configs.UpdatedAt); updated.After(modTime) {
-				modTime = updated
-			}
+	if logo, updated := currentBrandingLogo(); logo != nil {
+		stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
+		if updated.After(modTime) {
+			modTime = updated
 		}
 	}
 	var buf bytes.Buffer
@@ -1333,8 +1445,16 @@ func stampLogo(dst *image.RGBA, logo image.Image, height, margin int) {
 		return
 	}
 	width := lb.Dx() * height / lb.Dy()
-	x0 := dst.Bounds().Max.X - margin - width
-	y0 := dst.Bounds().Max.Y - margin - height
+	stampLogoAt(dst, logo, height, dst.Bounds().Max.X-margin-width, dst.Bounds().Max.Y-margin-height)
+}
+
+// stampLogoAt draws the logo in white with its top left corner at x0, y0
+func stampLogoAt(dst *image.RGBA, logo image.Image, height, x0, y0 int) {
+	lb := logo.Bounds()
+	if lb.Dx() == 0 || lb.Dy() == 0 || height <= 0 {
+		return
+	}
+	width := lb.Dx() * height / lb.Dy()
 	for ty := 0; ty < height; ty++ {
 		sy0, sy1 := lb.Min.Y+ty*lb.Dy()/height, lb.Min.Y+max((ty+1)*lb.Dy()/height, ty*lb.Dy()/height+1)
 		for tx := 0; tx < width; tx++ {
@@ -1364,6 +1484,7 @@ func stampLogo(dst *image.RGBA, logo image.Image, height, margin int) {
 }
 
 func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withTaskPriority(r.Context(), priorityShare))
 	src, _, connection, ok := s.getSharePreviewForRequest(w, r)
 	if !ok {
 		return
@@ -1380,6 +1501,7 @@ func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.
 // the original file for video and the scaled image for images. It does not count as a share use, since players
 // issue many range requests while seeking
 func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withTaskPriority(r.Context(), priorityShare))
 	src, _, connection, ok := s.getSharePreviewForRequest(w, r)
 	if !ok {
 		return
@@ -1463,9 +1585,9 @@ func serveInlineMedia(w http.ResponseWriter, r *http.Request, connection *Connec
 	return 0, nil
 }
 
-// warmSharePreview queues the preview of a single-file share as background tasks, when the
-// share is created or edited and on the hourly pass, so the picture link previews fetch is
-// ready before the link is posted: crawlers give up after a few seconds. Dead shares are skipped
+// warmSharePreview queues the preview of a single-file share at share priority as soon as the
+// share is created or edited, so the picture link previews fetch is ready before the link is
+// posted: crawlers give up after a few seconds. Dead shares are skipped
 func warmSharePreview(share dataprovider.Share) {
 	if sharePreviews == nil || len(share.Paths) != 1 || isDeadShare(&share) {
 		return
@@ -1499,7 +1621,7 @@ func warmSharePreview(share dataprovider.Share) {
 			continue
 		}
 		gen := asset.gen
-		_, _ = tasks.submit("preview", previewJobName(src, asset.suffix), laneBackground, 0, 10*time.Minute,
+		_, _ = tasks.submit("preview", previewJobName(src, asset.suffix), priorityShare, 0, 10*time.Minute,
 			func(ctx context.Context) error {
 				if _, err := os.Stat(p); err == nil {
 					return nil

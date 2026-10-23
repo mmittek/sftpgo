@@ -294,6 +294,14 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 	}
 	defer connection.CloseFS()
 
+	// fork: a link preview bot given the direct link gets the share page and its card, which
+	// still leads to this link; people get the file. It does not count as a use
+	if r.Method == http.MethodGet && r.Header.Get("Range") == "" && isLinkPreviewBot(r) {
+		s.renderShareDownloadPage(w, r.WithContext(withOGURL(r.Context(), requestAbsoluteURL(r))), &share,
+			r.URL.RequestURI(), connection)
+		return
+	}
+
 	if err = common.Connections.Add(connection); err != nil {
 		sendAPIResponse(w, r, err, "Unable to add connection", http.StatusTooManyRequests)
 		return

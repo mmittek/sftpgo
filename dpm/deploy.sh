@@ -152,8 +152,7 @@ status)
 import json, sys
 s = json.load(open(sys.argv[1]))
 print(f"background tasks (status of {s['updated']}):")
-for lane, l in sorted(s["lanes"].items()):
-    print(f"  {lane}: {l['workers']} workers, {l['queued']} queued")
+print(f"  {s['workers']} workers; queued: " + ", ".join(f"{p} {n}" for p, n in s["queued"].items()))
 for t in s.get("running") or []:
     print(f"  running {t['key']} for {t['seconds']:.0f}s (waited {t['waited_seconds']:.0f}s)")
 for p in s.get("periodic") or []:

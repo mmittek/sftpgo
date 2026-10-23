@@ -832,9 +832,22 @@ func (s *httpdServer) renderShareDownloadPage(w http.ResponseWriter, r *http.Req
 		baseClientPage: s.getBaseClientPageData(util.I18nShareDownloadTitle, "", w, r),
 		DownloadLink:   downloadLink,
 	}
-	data.Preview = s.getSharePreview(r, share, connection, data.Branding.Name)
+	data.Preview = s.getSharePreview(r.WithContext(withTaskPriority(r.Context(), priorityShare)), share, connection,
+		data.Branding.Name)
 	if data.Preview == nil {
 		data.Zip = getShareZipSummary(r, share, connection)
+		if data.Zip != nil {
+			data.Zip.SiteName = data.Branding.Name
+		}
+	}
+	// a link preview bot sent the direct link: the card leads there
+	if link := ogURLFrom(r.Context()); link != "" {
+		if data.Preview != nil {
+			data.Preview.PageURL = link
+		}
+		if data.Zip != nil {
+			data.Zip.PageURL = link
+		}
 	}
 	data.LogoutURL = ""
 	if share.Password != "" {

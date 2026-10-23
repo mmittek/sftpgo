@@ -42,7 +42,7 @@ func startShareCleanup() {
 		tasks.every("share-cleanup", shareCleanupInterval, 30*time.Minute, cleanup)
 		go func() {
 			time.Sleep(time.Minute) // a first pass soon after the start
-			_, _ = tasks.submit("share-cleanup", "periodic", laneBackground, 0, 30*time.Minute, cleanup)
+			_, _ = tasks.submit("share-cleanup", "periodic", priorityMaintenance, 0, 30*time.Minute, cleanup)
 		}()
 	})
 }
@@ -101,8 +101,6 @@ func removeDeadSharesOf(username string) {
 			dead = append(dead, shares[idx])
 		} else {
 			livePaths = append(livePaths, shares[idx].Paths...)
-			// link previews must be ready before a crawler asks
-			warmSharePreview(shares[idx])
 		}
 	}
 	for _, share := range dead {
@@ -122,7 +120,7 @@ func removeDeadSharesOf(username string) {
 
 // clearShareCacheLater clears the cache of a share deleted by its owner
 func clearShareCacheLater(share dataprovider.Share) {
-	_, _ = tasks.submit("share-cache-clear", share.ShareID, laneBackground, 0, 30*time.Minute,
+	_, _ = tasks.submit("share-cache-clear", share.ShareID, priorityMaintenance, 0, 30*time.Minute,
 		func(_ context.Context) error {
 			shareRemovals.Lock()
 			defer shareRemovals.Unlock()

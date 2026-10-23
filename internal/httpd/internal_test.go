@@ -38,6 +38,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -5169,7 +5170,8 @@ func TestResumableZip64(t *testing.T) {
 }
 
 func TestTaskManager(t *testing.T) {
-	m := newTaskManager(map[taskLane]int{laneInteractive: 1, laneBackground: 1})
+	m := newTaskManager(1)
+	quick := func(_ context.Context) error { return nil }
 	// the same key joins the queued or running task
 	release := make(chan struct{})
 	runs := 0
@@ -5178,32 +5180,53 @@ func TestTaskManager(t *testing.T) {
 		<-release
 		return nil
 	}
-	first, err := m.submit("k", "a", laneBackground, 0, time.Minute, slow)
+	first, err := m.submit("k", "a", priorityShare, 0, time.Minute, slow)
 	assert.NoError(t, err)
-	second, err := m.submit("k", "a", laneBackground, 0, time.Minute, slow)
+	second, err := m.submit("k", "a", priorityShare, 0, time.Minute, slow)
 	assert.NoError(t, err)
 	assert.Same(t, first, second)
+	time.Sleep(50 * time.Millisecond) // the only worker is busy with "a"
+	// queued work runs by priority, and a queued task moves up when a higher priority asks for it
+	var order []string
+	var mu sync.Mutex
+	record := func(name string) func(context.Context) error {
+		return func(ctx context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			order = append(order, fmt.Sprintf("%s@%s", name, taskPriorityFrom(ctx)))
+			return nil
+		}
+	}
+	maint, err := m.submit("k", "maintenance", priorityMaintenance, 0, time.Minute, record("cleanup"))
+	assert.NoError(t, err)
+	_, err = m.submit("k", "browse", priorityBrowse, 0, time.Minute, record("thumb"))
+	assert.NoError(t, err)
+	_, err = m.submit("k", "promoted", priorityMaintenance, 0, time.Minute, record("preview"))
+	assert.NoError(t, err)
+	_, err = m.submit("k", "promoted", priorityShare, 0, time.Minute, record("preview"))
+	assert.NoError(t, err)
 	close(release)
 	<-first.done
+	<-maint.done
 	assert.Equal(t, 1, runs)
+	assert.Equal(t, []string{"preview@share", "thumb@browse", "cleanup@maintenance"}, order)
 	// a cooldown keeps a key from running again too soon
-	quick := func(_ context.Context) error { return nil }
-	cooled, err := m.submit("k", "b", laneBackground, time.Hour, time.Minute, quick)
+	cooled, err := m.submit("k", "b", priorityMaintenance, time.Hour, time.Minute, quick)
 	assert.NoError(t, err)
 	<-cooled.done
-	_, err = m.submit("k", "b", laneBackground, time.Hour, time.Minute, quick)
+	_, err = m.submit("k", "b", priorityMaintenance, time.Hour, time.Minute, quick)
 	assert.ErrorIs(t, err, errTaskCoolDown)
 	// a panic fails the task, not the process, and a timeout cancels the context
-	assert.ErrorContains(t, m.run(context.Background(), "k", "panic", laneInteractive, time.Minute,
+	assert.ErrorContains(t, m.run(context.Background(), "k", "panic", priorityBrowse, time.Minute,
 		func(_ context.Context) error { panic("boom") }), "panic: boom")
-	assert.ErrorIs(t, m.run(context.Background(), "k", "slow", laneInteractive, 50*time.Millisecond,
+	assert.ErrorIs(t, m.run(context.Background(), "k", "slow", priorityBrowse, 50*time.Millisecond,
 		func(ctx context.Context) error {
 			<-ctx.Done()
 			return ctx.Err()
 		}), context.DeadlineExceeded)
 	// a full queue drops work instead of growing
 	block := make(chan struct{})
-	_, err = m.submit("fill", "busy", laneBackground, 0, time.Minute, func(_ context.Context) error {
+	_, err = m.submit("fill", "busy", priorityMaintenance, 0, time.Minute, func(_ context.Context) error {
 		<-block
 		return nil
 	})
@@ -5211,7 +5234,7 @@ func TestTaskManager(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // the worker picks up the blocking task
 	dropped := 0
 	for i := range taskQueueSize + 10 {
-		if _, err := m.submit("fill", strconv.Itoa(i), laneBackground, 0, time.Minute, quick); errors.Is(err, errTaskDropped) {
+		if _, err := m.submit("fill", strconv.Itoa(i), priorityMaintenance, 0, time.Minute, quick); errors.Is(err, errTaskDropped) {
 			dropped++
 		}
 	}

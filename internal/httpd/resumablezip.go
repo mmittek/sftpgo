@@ -681,6 +681,11 @@ type shareZipSummary struct {
 	Size        string
 	DownloadURL string
 	BrowseURL   string
+	// link preview tags
+	PageURL     string
+	CardURL     string
+	Description string
+	SiteName    string
 }
 
 type shareZipFile struct {
@@ -708,7 +713,8 @@ func getShareZipSummary(r *http.Request, share *dataprovider.Share, conn *Connec
 		return nil
 	}
 	base := getRequestBaseURL(r) + path.Join(webClientPubSharesPath, share.ShareID)
-	summary := &shareZipSummary{Title: share.Name, Size: util.ByteCountIEC(layout.total), DownloadURL: base}
+	summary := &shareZipSummary{Title: share.Name, Size: util.ByteCountIEC(layout.total), DownloadURL: base,
+		PageURL: base + "/download", CardURL: base + "/preview/card"}
 	if summary.Title == "" {
 		summary.Title = path.Base(share.Paths[0])
 	}
@@ -727,5 +733,10 @@ func getShareZipSummary(r *http.Request, share *dataprovider.Share, conn *Connec
 			summary.More++
 		}
 	}
+	noun := "files"
+	if summary.FileCount == 1 {
+		noun = "file"
+	}
+	summary.Description = fmt.Sprintf("ZIP | %d %s | %s", summary.FileCount, noun, summary.Size)
 	return summary
 }
