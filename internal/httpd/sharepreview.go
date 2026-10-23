@@ -1183,7 +1183,11 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 		if urls.Video != "" {
 			if cardVideoReady(src) {
 				preview.OGVideo = true
+				// versioned like the picture: chat apps cache videos by address
 				preview.VideoURL, preview.VideoType = urls.Video, "video/mp4"
+				if info, err := os.Stat(sharePreviews.path(src, sharePreviewCardVideoSuffix)); err == nil {
+					preview.VideoURL += "?v=" + strconv.FormatInt(info.ModTime().Unix(), 10)
+				}
 			} else {
 				queueCardVideo(src)
 			}
