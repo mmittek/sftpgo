@@ -70,7 +70,7 @@ def main():
     patterns = load_patterns(config_path)
     log(f"loaded {len(patterns)} allowed patterns from {config_path}")
 
-    # Authenticate — API key takes priority over user/password
+    # Authenticate: API key takes priority over user/password
     if 'SFTPGO_API_KEY' in creds:
         token = creds['SFTPGO_API_KEY']
         log("using API key authentication")

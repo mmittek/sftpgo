@@ -551,7 +551,7 @@ func getRequestBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-// formatPreviewAudio describes the source audio, for example "Stereo · 48 kHz · 24-bit"
+// formatPreviewAudio describes the source audio, for example "Stereo | 48 kHz | 24-bit"
 func formatPreviewAudio(probe sharePreviewProbe) []string {
 	var parts []string
 	switch probe.Channels {
@@ -578,7 +578,7 @@ func formatPreviewAudio(probe sharePreviewProbe) []string {
 }
 
 // formatPreviewDuration rounds down like the browser players do, so page and player agree
-// formatPreviewVideo describes the video stream, for example "H.264 · 109 Mbps"
+// formatPreviewVideo describes the video stream, for example "H.264 | 109 Mbps"
 func formatPreviewVideo(probe sharePreviewProbe) []string {
 	var parts []string
 	if probe.VideoCodec != "" {
@@ -670,7 +670,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	preview.Details = details[1:] // the page shows the kind as the file type chip instead
 	preview.FileType = strings.ToUpper(strings.TrimPrefix(path.Ext(src.name), "."))
 	preview.Size = util.ByteCountIEC(src.info.Size())
-	preview.Description = strings.Join(details, " · ")
+	preview.Description = strings.Join(details, " | ")
 	return preview
 }
 
