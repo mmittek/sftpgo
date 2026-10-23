@@ -1193,9 +1193,9 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 		title = path.Base(src.name)
 	}
 	return buildPreview(r, src, connection, title, siteName, previewURLs{
-		Page: base + "/download?compress=false",
-		// the uncompressed download of the original file, what the Download button points to
-		Download: base + "?compress=false",
+		Page: base + "/download",
+		// the original file, what the Download button points to
+		Download: base,
 		Media:    base + "/preview/media",
 		Thumb:    base + "/preview/thumb",
 		Peaks:    base + "/preview/peaks",

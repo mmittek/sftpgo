@@ -316,7 +316,9 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 			sendAPIResponse(w, r, err, "", getRespStatus(err))
 			return
 		}
-		if info.Mode().IsRegular() && r.URL.Query().Get("compress") == "false" {
+		// fork: a single file is always served as it is, zips are only for folders and several
+		// paths; old links may still carry ?compress=false, which is ignored
+		if info.Mode().IsRegular() {
 			compress = false
 		}
 	}
