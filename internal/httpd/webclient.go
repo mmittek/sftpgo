@@ -145,11 +145,11 @@ type filesPage struct {
 	CanCopy            bool
 	ShareUploadBaseURL string
 	// ShareZipURL downloads the whole shared folder as a zip (absolute, shown for copying)
-	ShareZipURL string
-	Error       *util.I18nError
-	Paths              []dirMapping
-	QuotaUsage         *userQuotaUsage
-	KeepAliveInterval  int
+	ShareZipURL       string
+	Error             *util.I18nError
+	Paths             []dirMapping
+	QuotaUsage        *userQuotaUsage
+	KeepAliveInterval int
 }
 
 type shareLoginPage struct {
