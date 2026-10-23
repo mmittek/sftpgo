@@ -40,6 +40,8 @@ services:
       - SHARE_PREVIEWS=true
       # what the background task manager is doing, rewritten every 15 seconds
       - TASKS_STATUS_FILE=/var/lib/sftpgo/tasks-status.json
+      # background task workers running in parallel, one is reserved for share work
+      - TASKS_WORKERS=4
     volumes:
       - ${STORAGEPOOL_PATH}:/srv/sftpgo/data
       - ${DATA_PATH}:/var/lib/sftpgo

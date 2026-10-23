@@ -30,7 +30,8 @@ func enqueueCacheSweep(dir string) {
 	if sharePreviews == nil || dir == "" {
 		return
 	}
-	_, _ = tasks.submit("cache-sweep", dir, priorityMaintenance, previewSweepInterval, 5*time.Minute,
+	_, _ = tasks.submit("cache-sweep", dir, []string{strings.TrimSuffix(dir, "/") + "/"}, priorityMaintenance,
+		previewSweepInterval, 5*time.Minute,
 		func(_ context.Context) error {
 			if removed := sweepPreviewCache(dir); removed > 0 {
 				logger.Debug(logSender, "", "preview cache of %q: removed %d stale files", dir, removed)

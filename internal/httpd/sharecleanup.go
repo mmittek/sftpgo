@@ -1,5 +1,5 @@
-// Removal of dead shares (fork addition): shares that expired or used up their download limit
-// are deleted by an hourly task, so the database only holds shares that still work. Until then
+// Removal of dead shares (fork addition): shares that expired, used up their download limit or
+// point to files that no longer exist are deleted by an hourly task, so the database only holds shares that still work. Until then
 // the link tells why it stopped working and the owner can still extend the share; afterwards it
 // says the link is no longer available. The previews and zip checksums kept for a removed share are cleared from the
 // .cache folders, unless another live share still covers the same files.
@@ -10,6 +10,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -46,7 +47,7 @@ func startShareCleanup() {
 			time.Sleep(30 * time.Second)
 			warmLiveShares()
 			time.Sleep(30 * time.Second) // then a first cleanup pass
-			_, _ = tasks.submit("share-cleanup", "periodic", priorityMaintenance, 0, 30*time.Minute, cleanup)
+			_, _ = tasks.submit("share-cleanup", "periodic", nil, priorityMaintenance, 0, 30*time.Minute, cleanup)
 		}()
 	})
 }
@@ -98,19 +99,35 @@ func removeDeadSharesOf(username string) {
 		logger.Warn(logSender, "", "share cleanup: unable to list the shares of %q: %v", username, err)
 		return
 	}
-	var dead []dataprovider.Share
+	user, userErr := dataprovider.GetUserWithGroupSettings(username, "")
+	var dead, missing []dataprovider.Share
 	var livePaths []string
 	for idx := range shares {
-		if isDeadShare(&shares[idx]) {
+		switch {
+		case isDeadShare(&shares[idx]):
 			dead = append(dead, shares[idx])
-		} else {
+		case userErr == nil && isMissingShare(&user, shares[idx].Paths):
+			missing = append(missing, shares[idx])
+		default:
 			livePaths = append(livePaths, shares[idx].Paths...)
 		}
 	}
-	for _, share := range dead {
+	// many missing paths at once means unreachable storage, not deleted files: keep them all
+	if len(missing) > 5 && len(missing)*4 > len(shares) {
+		logger.Warn(logSender, "", "share cleanup: %d of %d shares of %q point to missing paths, "+
+			"the storage may be unreachable, none removed", len(missing), len(shares), username)
+		for _, share := range missing {
+			livePaths = append(livePaths, share.Paths...)
+		}
+		missing = nil
+	}
+	for _, share := range append(dead, missing...) {
 		reason := "expired"
-		if share.MaxTokens > 0 && share.UsedTokens >= share.MaxTokens {
+		switch {
+		case share.MaxTokens > 0 && share.UsedTokens >= share.MaxTokens:
 			reason = "download limit reached"
+		case !isDeadShare(&share):
+			reason = "the shared path no longer exists"
 		}
 		if err := dataprovider.DeleteShare(share.ShareID, share.Username, "", ""); err != nil {
 			logger.Warn(logSender, "", "share cleanup: unable to remove share %q: %v", share.ShareID, err)
@@ -118,24 +135,53 @@ func removeDeadSharesOf(username string) {
 		}
 		logger.Info(logSender, "", "share cleanup: removed share %q (%q) of %q: %s", share.ShareID, share.Name,
 			share.Username, reason)
-		clearShareCache(share, livePaths)
+		queueShareCacheClear(share, livePaths)
 	}
 }
 
 // clearShareCacheLater clears the cache of a share deleted by its owner
 func clearShareCacheLater(share dataprovider.Share) {
-	_, _ = tasks.submit("share-cache-clear", share.ShareID, priorityMaintenance, 0, 30*time.Minute,
+	shares, err := userShares(share.Username)
+	if err != nil {
+		return
+	}
+	var livePaths []string
+	for idx := range shares {
+		livePaths = append(livePaths, shares[idx].Paths...)
+	}
+	queueShareCacheClear(share, livePaths)
+}
+
+// queueShareCacheClear queues the cache clearing of a removed share as a maintenance task that
+// holds the shared files and folders, so no preview of them is made meanwhile
+func queueShareCacheClear(share dataprovider.Share, livePaths []string) {
+	if sharePreviews == nil {
+		return
+	}
+	user, err := dataprovider.GetUserWithGroupSettings(share.Username, "")
+	if err != nil {
+		return
+	}
+	var items []string
+	for _, sharedPath := range share.Paths {
+		fsys, err := user.GetFilesystemForPath(sharedPath, "")
+		if err != nil || !vfs.IsLocalOsFs(fsys) {
+			continue
+		}
+		resolved, err := fsys.ResolvePath(sharedPath)
+		if err != nil {
+			continue
+		}
+		if info, err := os.Stat(resolved); err == nil && info.IsDir() {
+			resolved = strings.TrimSuffix(resolved, "/") + "/"
+		}
+		items = append(items, resolved)
+	}
+	if len(items) == 0 {
+		return
+	}
+	_, _ = tasks.submit("share-cache-clear", share.ShareID, items, priorityMaintenance, 0, 30*time.Minute,
 		func(_ context.Context) error {
-			shareRemovals.Lock()
-			defer shareRemovals.Unlock()
-			shares, err := userShares(share.Username)
-			if err != nil {
-				return err
-			}
-			var livePaths []string
-			for idx := range shares {
-				livePaths = append(livePaths, shares[idx].Paths...)
-			}
 			clearShareCache(share, livePaths)
 			return nil
 		})
@@ -234,12 +280,25 @@ func clearCacheDir(cacheDir, source string) int {
 type shareWithKind struct {
 	dataprovider.Share
 	Kind string `json:"kind"`
+	// ThumbURL is the small preview of a single-file share, shown in the shares list
+	ThumbURL string `json:"thumb_url,omitempty"`
 }
 
 func withShareKinds(user *dataprovider.User, shares []dataprovider.Share) []shareWithKind {
 	result := make([]shareWithKind, 0, len(shares))
 	for _, share := range shares {
-		result = append(result, shareWithKind{Share: share, Kind: getShareKind(user, share.Paths)})
+		item := shareWithKind{Share: share, Kind: getShareKind(user, share.Paths)}
+		if item.Kind == "file" && sharePreviews != nil {
+			base := path.Join(webClientPubSharesPath, share.ShareID, "preview", "thumb")
+			switch sharePreviewExts[strings.ToLower(path.Ext(share.Paths[0]))] {
+			case sharePreviewImage, sharePreviewVideo:
+				item.ThumbURL = base + "?size=small"
+			case sharePreviewAudio:
+				// the waveform card, cropped by the list
+				item.ThumbURL = base
+			}
+		}
+		result = append(result, item)
 	}
 	return result
 }
@@ -287,4 +346,36 @@ func warmLiveShares() {
 			return
 		}
 	}
+}
+
+// isMissingShare: every shared path is gone while the folder that held it is still there, so the
+// storage is reachable and the files were deleted or renamed
+func isMissingShare(user *dataprovider.User, paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, sharedPath := range paths {
+		if sharedPath == "/" {
+			return false
+		}
+		fsys, err := user.GetFilesystemForPath(sharedPath, "")
+		if err != nil {
+			return false
+		}
+		resolved, err := fsys.ResolvePath(sharedPath)
+		if err != nil {
+			return false
+		}
+		if _, err := fsys.Stat(resolved); err == nil || !fsys.IsNotExist(err) {
+			return false
+		}
+		parentResolved, err := fsys.ResolvePath(path.Dir(sharedPath))
+		if err != nil {
+			return false
+		}
+		if info, err := fsys.Stat(parentResolved); err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
 }

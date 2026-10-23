@@ -36,6 +36,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -5169,8 +5170,97 @@ func TestResumableZip64(t *testing.T) {
 	assert.Equal(t, int64(4608<<20), n)
 }
 
+// waitTask fails the test instead of hanging when a task never runs
+func waitTask(t *testing.T, task *task) {
+	t.Helper()
+	select {
+	case <-task.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("task %s did not run", task.key)
+	}
+}
+
+func TestTaskManagerItems(t *testing.T) {
+	m := newTaskManager(4)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var log []string
+	step := func(name string, hold bool) func(context.Context) error {
+		return func(_ context.Context) error {
+			mu.Lock()
+			log = append(log, name+" start")
+			mu.Unlock()
+			if hold {
+				<-release
+			}
+			mu.Lock()
+			log = append(log, name+" end")
+			mu.Unlock()
+			return nil
+		}
+	}
+	// a sweep of a folder holds everything inside it: the preview of a file in it waits,
+	// a file elsewhere does not
+	sweep, err := m.submit("sweep", "/pool/a", []string{"/pool/a/"}, priorityShare, 0, time.Minute, step("sweep", true))
+	assert.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	inside, err := m.submit("preview", "inside", []string{"/pool/a/x.wav"}, priorityShare, 0, time.Minute, step("inside", false))
+	assert.NoError(t, err)
+	elsewhere, err := m.submit("preview", "elsewhere", []string{"/pool/b/y.wav"}, priorityShare, 0, time.Minute, step("elsewhere", false))
+	assert.NoError(t, err)
+	waitTask(t, elsewhere)
+	select {
+	case <-inside.done:
+		t.Fatal("a preview ran inside a folder being swept")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	waitTask(t, sweep)
+	waitTask(t, inside)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Less(t, slices.Index(log, "sweep end"), slices.Index(log, "inside start"))
+	assert.True(t, itemsOverlap("/a/", "/a/b/c"))
+	assert.False(t, itemsOverlap("/a/b", "/a/bc"))
+	assert.False(t, itemsOverlap("/a/x", "/a/y"))
+}
+
+func TestTaskManagerParallel(t *testing.T) {
+	m := newTaskManager(3)
+	block := make(chan struct{})
+	started := make(chan string, 10)
+	busy := func(name string) func(context.Context) error {
+		return func(_ context.Context) error {
+			started <- name
+			<-block
+			return nil
+		}
+	}
+	// browsing takes all but the reserved worker, maintenance one at a time
+	for i := range 3 {
+		_, err := m.submit("browse", strconv.Itoa(i), nil, priorityBrowse, 0, time.Minute, busy("browse"))
+		assert.NoError(t, err)
+	}
+	_, err := m.submit("maint", "a", nil, priorityMaintenance, 0, time.Minute, busy("maintenance"))
+	assert.NoError(t, err)
+	assert.Equal(t, "browse", <-started)
+	assert.Equal(t, "browse", <-started)
+	select {
+	case name := <-started:
+		t.Fatalf("%s started on the worker reserved for share work", name)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// share work gets the reserved worker at once
+	shareDone, err := m.submit("share", "page", nil, priorityShare, 0, time.Minute, func(_ context.Context) error { return nil })
+	assert.NoError(t, err)
+	waitTask(t, shareDone)
+	close(block)
+}
+
 func TestTaskManager(t *testing.T) {
-	m := newTaskManager(1)
+	m := newTaskManager(2)
+	m.workers = 1 // one at a time, to check the order (workers start on the first submit)
+	m.limits = [priorityCount]int{1, 1, 1}
 	quick := func(_ context.Context) error { return nil }
 	// the same key joins the queued or running task
 	release := make(chan struct{})
@@ -5180,9 +5270,9 @@ func TestTaskManager(t *testing.T) {
 		<-release
 		return nil
 	}
-	first, err := m.submit("k", "a", priorityShare, 0, time.Minute, slow)
+	first, err := m.submit("k", "a", nil, priorityShare, 0, time.Minute, slow)
 	assert.NoError(t, err)
-	second, err := m.submit("k", "a", priorityShare, 0, time.Minute, slow)
+	second, err := m.submit("k", "a", nil, priorityShare, 0, time.Minute, slow)
 	assert.NoError(t, err)
 	assert.Same(t, first, second)
 	time.Sleep(50 * time.Millisecond) // the only worker is busy with "a"
@@ -5197,36 +5287,36 @@ func TestTaskManager(t *testing.T) {
 			return nil
 		}
 	}
-	maint, err := m.submit("k", "maintenance", priorityMaintenance, 0, time.Minute, record("cleanup"))
+	maint, err := m.submit("k", "maintenance", nil, priorityMaintenance, 0, time.Minute, record("cleanup"))
 	assert.NoError(t, err)
-	_, err = m.submit("k", "browse", priorityBrowse, 0, time.Minute, record("thumb"))
+	_, err = m.submit("k", "browse", nil, priorityBrowse, 0, time.Minute, record("thumb"))
 	assert.NoError(t, err)
-	_, err = m.submit("k", "promoted", priorityMaintenance, 0, time.Minute, record("preview"))
+	_, err = m.submit("k", "promoted", nil, priorityMaintenance, 0, time.Minute, record("preview"))
 	assert.NoError(t, err)
-	_, err = m.submit("k", "promoted", priorityShare, 0, time.Minute, record("preview"))
+	_, err = m.submit("k", "promoted", nil, priorityShare, 0, time.Minute, record("preview"))
 	assert.NoError(t, err)
 	close(release)
-	<-first.done
-	<-maint.done
+	waitTask(t, first)
+	waitTask(t, maint)
 	assert.Equal(t, 1, runs)
 	assert.Equal(t, []string{"preview@share", "thumb@browse", "cleanup@maintenance"}, order)
 	// a cooldown keeps a key from running again too soon
-	cooled, err := m.submit("k", "b", priorityMaintenance, time.Hour, time.Minute, quick)
+	cooled, err := m.submit("k", "b", nil, priorityMaintenance, time.Hour, time.Minute, quick)
 	assert.NoError(t, err)
-	<-cooled.done
-	_, err = m.submit("k", "b", priorityMaintenance, time.Hour, time.Minute, quick)
+	waitTask(t, cooled)
+	_, err = m.submit("k", "b", nil, priorityMaintenance, time.Hour, time.Minute, quick)
 	assert.ErrorIs(t, err, errTaskCoolDown)
 	// a panic fails the task, not the process, and a timeout cancels the context
-	assert.ErrorContains(t, m.run(context.Background(), "k", "panic", priorityBrowse, time.Minute,
+	assert.ErrorContains(t, m.run(context.Background(), "k", "panic", nil, priorityBrowse, time.Minute,
 		func(_ context.Context) error { panic("boom") }), "panic: boom")
-	assert.ErrorIs(t, m.run(context.Background(), "k", "slow", priorityBrowse, 50*time.Millisecond,
+	assert.ErrorIs(t, m.run(context.Background(), "k", "slow", nil, priorityBrowse, 50*time.Millisecond,
 		func(ctx context.Context) error {
 			<-ctx.Done()
 			return ctx.Err()
 		}), context.DeadlineExceeded)
 	// a full queue drops work instead of growing
 	block := make(chan struct{})
-	_, err = m.submit("fill", "busy", priorityMaintenance, 0, time.Minute, func(_ context.Context) error {
+	_, err = m.submit("fill", "busy", nil, priorityMaintenance, 0, time.Minute, func(_ context.Context) error {
 		<-block
 		return nil
 	})
@@ -5234,7 +5324,7 @@ func TestTaskManager(t *testing.T) {
 	time.Sleep(50 * time.Millisecond) // the worker picks up the blocking task
 	dropped := 0
 	for i := range taskQueueSize + 10 {
-		if _, err := m.submit("fill", strconv.Itoa(i), priorityMaintenance, 0, time.Minute, quick); errors.Is(err, errTaskDropped) {
+		if _, err := m.submit("fill", strconv.Itoa(i), nil, priorityMaintenance, 0, time.Minute, quick); errors.Is(err, errTaskDropped) {
 			dropped++
 		}
 	}
@@ -5243,4 +5333,32 @@ func TestTaskManager(t *testing.T) {
 	status := m.snapshot()
 	assert.Equal(t, int64(10), status.Kinds["fill"].Dropped)
 	assert.Equal(t, int64(2), status.Kinds["k"].Failed)
+}
+
+func TestScorePosterFrames(t *testing.T) {
+	size := posterSampleSize * posterSampleSize * 3
+	frame := func(fill func(i int) (byte, byte, byte)) []byte {
+		b := make([]byte, size)
+		for i := 0; i < size; i += 3 {
+			b[i], b[i+1], b[i+2] = fill(i / 3)
+		}
+		return b
+	}
+	black := frame(func(int) (byte, byte, byte) { return 3, 3, 3 })
+	// a colorful, contrasted still scene
+	scene := frame(func(p int) (byte, byte, byte) {
+		x, y := p%posterSampleSize, p/posterSampleSize
+		return byte(40 + x), byte(20 + y/2), byte(160 - x/2)
+	})
+	shifted := frame(func(p int) (byte, byte, byte) {
+		x, y := (p+37)%posterSampleSize, p/posterSampleSize
+		return byte(40 + x), byte(20 + y/2), byte(160 - x/2)
+	})
+	flat := frame(func(int) (byte, byte, byte) { return 90, 90, 90 })
+	still := scorePosterFrames([][]byte{scene, scene, scene})
+	moving := scorePosterFrames([][]byte{scene, scene, shifted})
+	assert.Less(t, scorePosterFrames([][]byte{black, black, black}), 0.0)
+	assert.Greater(t, still, moving)
+	assert.Greater(t, still, scorePosterFrames([][]byte{flat, flat, flat}))
+	assert.Less(t, scorePosterFrames([][]byte{black, scene, flat}), 0.0, "a cut")
 }

@@ -1,13 +1,17 @@
 // Background tasks (fork addition): one manager runs the work behind previews, cache upkeep
 // and share cleanup.
 //
-//   - one queue with three priorities, served by a small pool of workers, highest first:
-//     share work (share pages, share listings, link previews, previews of a new or edited
-//     share), then browsing (previews and thumbnails of the logged-in file browser), then
-//     maintenance (cache sweeps, share cleanup, cache clearing), which runs only when nothing
-//     else is waiting
+//   - one queue with three priorities, served by a pool of workers running in parallel (4,
+//     TASKS_WORKERS), highest first: share work (share pages, share listings, link previews,
+//     previews of a new or edited share), then browsing (previews and thumbnails of the
+//     logged-in file browser), then maintenance (cache sweeps, share cleanup, cache clearing)
+//   - one worker is reserved for share work, so share pages and link previews never wait
+//     behind the rest, and at most one maintenance task runs at a time
 //   - a task has a key: submitting a key that is queued or running joins that task, and a
 //     queued task moves up when a higher priority asks for it
+//   - a task names the items it works on (files, or folders ending with "/"): two tasks never
+//     run at the same time on overlapping items, a folder overlapping everything inside it; a
+//     task held back this way stays queued and the worker takes the next one
 //   - a key can have a cooldown: it is not run again before the cooldown has passed
 //   - periodic tasks (maintenance) are registered in one place
 //   - every task runs with a timeout and a panic guard; a full priority queue drops new work
@@ -25,6 +29,8 @@ import (
 	"os"
 	"runtime/debug"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,16 +51,23 @@ func (p taskPriority) String() string {
 }
 
 const (
-	taskWorkers     = 2
-	taskQueueSize   = 1000 // per priority
-	taskStatusEvery = 15 * time.Second
+	taskWorkersDefault = 4
+	taskQueueSize      = 1000 // per priority
+	taskStatusEvery    = 15 * time.Second
 )
 
 var (
 	errTaskDropped  = errors.New("the task queue is full, the task was dropped")
 	errTaskCoolDown = errors.New("the task ran recently")
-	tasks           = newTaskManager(taskWorkers)
+	tasks           = newTaskManager(taskWorkersFromEnv())
 )
+
+func taskWorkersFromEnv() int {
+	if n, err := strconv.Atoi(os.Getenv("TASKS_WORKERS")); err == nil && n >= 2 {
+		return n
+	}
+	return taskWorkersDefault
+}
 
 type taskPriorityKey struct{}
 
@@ -74,6 +87,8 @@ func taskPriorityFrom(ctx context.Context) taskPriority {
 type task struct {
 	kind     string
 	key      string
+	items    []string
+	worker   int
 	priority taskPriority
 	timeout  time.Duration
 	fn       func(context.Context) error
@@ -101,19 +116,25 @@ type periodicTask struct {
 }
 
 type taskManager struct {
-	mu       sync.Mutex
-	ready    *sync.Cond
-	queues   [priorityCount][]*task
-	workers  int
-	active   map[string]*task // queued or running, by key
-	running  map[string]*task
-	lastDone map[string]time.Time // for cooldowns
-	stats    map[string]*taskKindStats
-	periodic []*periodicTask
-	once     sync.Once
+	mu      sync.Mutex
+	ready   *sync.Cond
+	queues  [priorityCount][]*task
+	workers int
+	// running tasks per priority, against limits: maintenance runs one at a time, browsing
+	// leaves the reserved worker to share work
+	runningBy [priorityCount]int
+	limits    [priorityCount]int
+	busy      []string         // items of the running tasks
+	active    map[string]*task // queued or running, by key
+	running   map[string]*task
+	lastDone  map[string]time.Time // for cooldowns
+	stats     map[string]*taskKindStats
+	periodic  []*periodicTask
+	once      sync.Once
 }
 
 func newTaskManager(workers int) *taskManager {
+	workers = max(workers, 2)
 	m := &taskManager{
 		workers:  workers,
 		active:   make(map[string]*task),
@@ -121,14 +142,15 @@ func newTaskManager(workers int) *taskManager {
 		lastDone: make(map[string]time.Time),
 		stats:    make(map[string]*taskKindStats),
 	}
+	m.limits = [priorityCount]int{workers, workers - 1, 1}
 	m.ready = sync.NewCond(&m.mu)
 	return m
 }
 
 func (m *taskManager) start() {
 	m.once.Do(func() {
-		for range m.workers {
-			go m.work()
+		for worker := range m.workers {
+			go m.work(worker + 1)
 		}
 		go m.writeStatus()
 	})
@@ -157,11 +179,12 @@ func (m *taskManager) promote(t *task, p taskPriority) {
 	}
 	t.priority = p
 	m.queues[p] = append(m.queues[p], t)
+	m.ready.Broadcast()
 }
 
 // submit queues a task, or returns the queued or running task with the same key (moved up
 // when this priority is higher). A key that finished less than cooldown ago is not run again
-func (m *taskManager) submit(kind, key string, priority taskPriority, cooldown, timeout time.Duration,
+func (m *taskManager) submit(kind, key string, items []string, priority taskPriority, cooldown, timeout time.Duration,
 	fn func(context.Context) error,
 ) (*task, error) {
 	m.start()
@@ -179,20 +202,20 @@ func (m *taskManager) submit(kind, key string, priority taskPriority, cooldown, 
 		m.kindStats(kind).Dropped++
 		return nil, errTaskDropped
 	}
-	t := &task{kind: kind, key: fullKey, priority: priority, timeout: timeout, fn: fn, queued: time.Now(),
-		done: make(chan struct{}), cooldown: cooldown}
+	t := &task{kind: kind, key: fullKey, items: items, priority: priority, timeout: timeout, fn: fn,
+		queued: time.Now(), done: make(chan struct{}), cooldown: cooldown}
 	m.active[fullKey] = t
 	m.queues[priority] = append(m.queues[priority], t)
-	m.ready.Signal()
+	m.ready.Broadcast()
 	return t, nil
 }
 
 // run submits a task and waits for it, or for ctx: the task keeps running when the caller
 // stops waiting, so the next caller finds the work done
-func (m *taskManager) run(ctx context.Context, kind, key string, priority taskPriority, timeout time.Duration,
-	fn func(context.Context) error,
+func (m *taskManager) run(ctx context.Context, kind, key string, items []string, priority taskPriority,
+	timeout time.Duration, fn func(context.Context) error,
 ) error {
-	t, err := m.submit(kind, key, priority, 0, timeout, fn)
+	t, err := m.submit(kind, key, items, priority, 0, timeout, fn)
 	if err != nil {
 		return err
 	}
@@ -217,7 +240,7 @@ func (m *taskManager) every(kind string, interval, timeout time.Duration, fn fun
 			wait := time.Until(p.next)
 			m.mu.Unlock()
 			time.Sleep(wait)
-			if _, err := m.submit(kind, "periodic", priorityMaintenance, 0, timeout, fn); err != nil {
+			if _, err := m.submit(kind, "periodic", nil, priorityMaintenance, 0, timeout, fn); err != nil {
 				logger.Warn(logSender, "", "task %s: not scheduled: %v", kind, err)
 			}
 			m.mu.Lock()
@@ -227,17 +250,50 @@ func (m *taskManager) every(kind string, interval, timeout time.Duration, fn fun
 	}()
 }
 
-// next waits for the highest priority queued task
-func (m *taskManager) next() *task {
+// itemsOverlap: the same item, or a folder (ending with "/") and anything inside it
+func itemsOverlap(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return (strings.HasSuffix(a, "/") && strings.HasPrefix(b, a)) || (strings.HasSuffix(b, "/") && strings.HasPrefix(a, b))
+}
+
+func (m *taskManager) itemsBusy(items []string) bool {
+	for _, item := range items {
+		for _, busy := range m.busy {
+			if itemsOverlap(item, busy) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// next waits for the highest priority queued task that its priority limit lets run and whose
+// items no running task holds
+func (m *taskManager) next(worker int) *task {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for {
+		// everything but share work together leaves the reserved worker free
+		others := m.runningBy[priorityBrowse] + m.runningBy[priorityMaintenance]
 		for p := range priorityCount {
-			if queue := m.queues[p]; len(queue) > 0 {
-				t := queue[0]
-				m.queues[p] = queue[1:]
+			if p != priorityShare && m.workers > 1 && others >= m.workers-1 {
+				continue
+			}
+			if m.runningBy[p] >= m.limits[p] {
+				continue
+			}
+			for i, t := range m.queues[p] {
+				if m.itemsBusy(t.items) {
+					continue
+				}
+				m.queues[p] = append(m.queues[p][:i:i], m.queues[p][i+1:]...)
 				t.started = time.Now()
+				t.worker = worker
 				m.running[t.key] = t
+				m.runningBy[p]++
+				m.busy = append(m.busy, t.items...)
 				return t
 			}
 		}
@@ -245,15 +301,30 @@ func (m *taskManager) next() *task {
 	}
 }
 
-func (m *taskManager) work() {
+func (m *taskManager) release(t *task) {
+	for _, item := range t.items {
+		for i, busy := range m.busy {
+			if busy == item {
+				m.busy = append(m.busy[:i:i], m.busy[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+func (m *taskManager) work(worker int) {
 	for {
-		t := m.next()
+		t := m.next(worker)
 		t.err = m.execute(t)
 		elapsed := time.Since(t.started)
 
 		m.mu.Lock()
 		delete(m.running, t.key)
 		delete(m.active, t.key)
+		m.runningBy[t.priority]--
+		m.release(t)
+		// a finished task may let a task held back by a priority limit run
+		m.ready.Broadcast()
 		if t.cooldown > 0 {
 			m.lastDone[t.key] = time.Now()
 			if len(m.lastDone) > 10000 {
@@ -305,10 +376,12 @@ type taskStatus struct {
 }
 
 type runningTaskStatus struct {
-	Key      string  `json:"key"`
-	Priority string  `json:"priority"`
-	Seconds  float64 `json:"seconds"`
-	Waited   float64 `json:"waited_seconds"`
+	Worker   int      `json:"worker"`
+	Key      string   `json:"key"`
+	Items    []string `json:"items,omitempty"`
+	Priority string   `json:"priority"`
+	Seconds  float64  `json:"seconds"`
+	Waited   float64  `json:"waited_seconds"`
 }
 
 type periodicTaskStatus struct {
@@ -326,10 +399,11 @@ func (m *taskManager) snapshot() taskStatus {
 		status.Queued[p.String()] = len(m.queues[p])
 	}
 	for _, t := range m.running {
-		status.Running = append(status.Running, runningTaskStatus{Key: t.key, Priority: t.priority.String(),
-			Seconds: time.Since(t.started).Round(time.Second).Seconds(), Waited: t.started.Sub(t.queued).Round(time.Second).Seconds()})
+		status.Running = append(status.Running, runningTaskStatus{Worker: t.worker, Key: t.key, Items: t.items,
+			Priority: t.priority.String(),
+			Seconds:  time.Since(t.started).Round(time.Second).Seconds(), Waited: t.started.Sub(t.queued).Round(time.Second).Seconds()})
 	}
-	sort.Slice(status.Running, func(i, j int) bool { return status.Running[i].Key < status.Running[j].Key })
+	sort.Slice(status.Running, func(i, j int) bool { return status.Running[i].Worker < status.Running[j].Worker })
 	for _, p := range m.periodic {
 		status.Periodic = append(status.Periodic, periodicTaskStatus{Kind: p.kind, Interval: p.interval.String(),
 			Next: p.next.UTC().Format(time.RFC3339)})

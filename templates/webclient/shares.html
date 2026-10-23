@@ -16,6 +16,14 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 {{- template "base" .}}
 
 {{- define "extra_css"}}
+<style {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
+    .share-thumb-box { position: relative; width: 40px; height: 40px; flex-shrink: 0; display: flex;
+        align-items: center; justify-content: center; }
+    .share-thumb-box img { position: absolute; inset: 0; width: 40px; height: 40px; object-fit: cover;
+        border-radius: 6px; opacity: 0; transition: opacity 0.15s; }
+    .share-thumb-box.thumb-loaded img { opacity: 1; }
+    .share-thumb-box.thumb-loaded i { visibility: hidden; }
+</style>
 <link href="{{.StaticURL}}/assets/plugins/custom/datatables/datatables.bundle.css" rel="stylesheet" type="text/css"/>
 {{- end}}
 
@@ -166,12 +174,18 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 <script {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}} src="{{.StaticURL}}/assets/plugins/custom/datatables/datatables.bundle.js"></script>
 <script type="text/javascript" {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
 
-    function deleteAction(shareID) {
+    // fork: say clearly that only the share link goes, never the shared files
+    function deleteAction(shareID, shareName, kind, paths) {
+        const what = kind === 'folder' ? 'folder' : (kind === 'file' ? 'file' : 'files');
+        const target = (paths && paths.length === 1) ? paths[0] : '';
         ModalAlert.fire({
-            text: $.t('general.delete_confirm_generic'),
+            title: 'Delete share link',
+            html: `<p class="fs-5 mb-4">Delete the share <b>${escapeHTML(shareName || shareID)}</b>?</p>
+                   <p class="fs-6 text-gray-700 mb-2">Only the share link is removed: anyone who has it will no longer be able to open it.</p>
+                   <p class="fs-6 text-gray-700 mb-0">The shared ${what}${target ? ` <span class="text-gray-900 fw-semibold text-break">${escapeHTML(target)}</span>` : ''} is <b>not deleted</b> and stays in your files.</p>`,
             icon: "warning",
-            confirmButtonText: $.t('general.delete_confirm_btn'),
-            cancelButtonText: $.t('general.cancel'),
+            confirmButtonText: 'Delete share',
+            cancelButtonText: 'Keep share',
             customClass: {
                 confirmButton: "btn btn-danger",
                 cancelButton: 'btn btn-secondary'
@@ -336,6 +350,21 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                     const href = '{{.FilesURL}}?path=' + encodeURIComponent(row["paths"][0]);
                                     html = `<a href="${href}" class="text-gray-800 text-hover-primary">${html}</a>`;
                                 }
+                                if (row["thumb_url"]) {
+                                    // the icon shows until the preview has loaded, and stays if there is none
+                                    return `<div class="d-flex align-items-center">
+                                            <span class="share-thumb-box me-3">
+                                                <i class="ki-duotone ${icon} fs-2x text-primary">
+                                                    <span class="path1"></span>
+                                                    <span class="path2"></span>
+                                                    <span class="path3"></span>
+                                                </i>
+                                                <img src="${row['thumb_url']}" alt="" loading="lazy" decoding="async"
+                                                    onload="this.parentNode.classList.add('thumb-loaded')" onerror="this.remove()">
+                                            </span>
+                                            <span>${html}</span>
+                                        </div>`;
+                                }
                                 return `<div class="d-flex align-items-center">
                                             <i class="ki-duotone ${icon} fs-2x text-primary me-3">
                                                 <span class="path1"></span>
@@ -455,7 +484,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                                 <a data-i18n="general.edit" href="#" class="menu-link px-3" data-table-action="edit_row">Edit</a>
                                             </div>
                                             <div class="menu-item px-3">
-                                                <a data-i18n="general.delete" href="#" class="menu-link text-danger px-3" data-table-action="delete_row">Delete</a>
+                                                <a href="#" class="menu-link text-danger px-3" data-table-action="delete_row">Delete share</a>
                                             </div>
                                         </div>
                                     </div>
@@ -531,7 +560,8 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 el.on("click", function(e){
                     e.preventDefault();
                     const parent = e.target.closest('tr');
-                    deleteAction(dt.row(parent).data()["id"]);
+                    const rowData = dt.row(parent).data();
+                    deleteAction(rowData["id"], rowData["name"], rowData["kind"], rowData["paths"]);
                 });
             });
 

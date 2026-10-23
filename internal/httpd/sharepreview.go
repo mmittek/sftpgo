@@ -50,11 +50,13 @@ const (
 	sharePreviewAssetsVersion = "4"
 	// version of the probe alone: adding details redoes only the small probe files
 	sharePreviewProbeVersion = "5"
-	sharePreviewCacheDir     = ".cache"
-	sharePreviewProbeSuffix  = ".probe.json"
-	sharePreviewThumbSuffix  = ".thumb.jpg"
-	sharePreviewPeaksSuffix  = ".peaks.json"
-	sharePreviewAudioSuffix  = ".preview.mp3"
+	// version of the video poster choice: changing it redoes only the video posters
+	sharePreviewPosterVersion = "2"
+	sharePreviewCacheDir      = ".cache"
+	sharePreviewProbeSuffix   = ".probe.json"
+	sharePreviewThumbSuffix   = ".thumb.jpg"
+	sharePreviewPeaksSuffix   = ".peaks.json"
+	sharePreviewAudioSuffix   = ".preview.mp3"
 	// tiny thumbnail for file lists
 	sharePreviewSmallSuffix = ".thumb-sm.jpg"
 	sharePreviewSmallBox    = 256
@@ -149,6 +151,9 @@ type sharePreviewProbe struct {
 	// video only: frames per second and what wrote the file (camera, editor, ffmpeg)
 	FrameRate float64 `json:"frame_rate"`
 	Source    string  `json:"source"`
+	// the moment chosen for the video poster, by the poster choice of PosterVersion
+	PosterTime    float64 `json:"poster_time,omitempty"`
+	PosterVersion string  `json:"poster_version,omitempty"`
 	// the source this probe and the other cached assets were made from
 	SourceSize   int64  `json:"source_size"`
 	SourceMtime  int64  `json:"source_mtime"`
@@ -195,8 +200,10 @@ func (c *sharePreviewCache) dropStale(src *sharePreviewSource) {
 // run executes fn once per name while concurrent callers wait for the same result, at the
 // priority of the request (share or browse): the job outlives the request that started it, so
 // a crawler that gives up does not waste the work for the next one
-func (c *sharePreviewCache) run(ctx context.Context, name string, fn func(context.Context) error) error {
-	return tasks.run(ctx, "preview", name, taskPriorityFrom(ctx), 10*time.Minute, fn)
+func (c *sharePreviewCache) run(ctx context.Context, src *sharePreviewSource, name string,
+	fn func(context.Context) error,
+) error {
+	return tasks.run(ctx, "preview", name, []string{src.resolved}, taskPriorityFrom(ctx), 10*time.Minute, fn)
 }
 
 // ensure returns the path of a cached asset, generating it if missing
@@ -210,7 +217,7 @@ func (c *sharePreviewCache) ensure(ctx context.Context, src *sharePreviewSource,
 	if err := os.MkdirAll(filepath.Dir(p), 0o775); err != nil {
 		return "", err
 	}
-	if err := c.run(ctx, previewJobName(src, suffix), func(ctx context.Context) error { return gen(ctx, src) }); err != nil {
+	if err := c.run(ctx, src, previewJobName(src, suffix), func(ctx context.Context) error { return gen(ctx, src) }); err != nil {
 		return "", err
 	}
 	return p, nil
@@ -266,7 +273,7 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 	if src.kind == sharePreviewImage {
 		return c.genImageProbe(ctx, src)
 	}
-	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-print_format", "json",
+	out, err := mediaCommand(ctx, "ffprobe", "-v", "error", "-print_format", "json",
 		"-show_streams", "-show_format", "file:"+src.resolved).Output()
 	if err != nil {
 		return fmt.Errorf("ffprobe: %w", err)
@@ -466,7 +473,7 @@ func formatFrameRate(rate float64) string {
 
 // genImageProbe reads size, camera and lens with exiftool, which understands camera raw files
 func (c *sharePreviewCache) genImageProbe(ctx context.Context, src *sharePreviewSource) error {
-	out, err := exec.CommandContext(ctx, "exiftool", "-j", "-Make", "-Model", "-LensID", "-LensModel",
+	out, err := mediaCommand(ctx, "exiftool", "-j", "-Make", "-Model", "-LensID", "-LensModel",
 		"-ImageSize#", "-DefaultCropSize#", "-Orientation#", src.resolved).Output()
 	if err != nil {
 		return fmt.Errorf("exiftool: %w", err)
@@ -573,7 +580,8 @@ func (c *sharePreviewCache) genSmallThumb(ctx context.Context, src *sharePreview
 }
 
 // renderStill writes a JPEG of the image itself, of the embedded rendering of a camera raw
-// file or of the video frame in the middle of the video, through the given scale filter
+// file or of a video frame (the middle one, then the one pickPosterTime chose), through the
+// given scale filter
 func (c *sharePreviewCache) renderStill(ctx context.Context, src *sharePreviewSource, filter, suffix string) error {
 	if sharePreviewRawExts[strings.ToLower(filepath.Ext(src.resolved))] {
 		return c.genRawThumb(ctx, src, filter, suffix)
@@ -589,12 +597,20 @@ func (c *sharePreviewCache) renderStill(ctx context.Context, src *sharePreviewSo
 		if err != nil {
 			return err
 		}
-		args = append(args, "-ss", fmt.Sprintf("%.2f", probe.Duration/2))
+		// the chosen moment once picked, the middle of the video until then (fast: one seek,
+		// one frame) while the pick runs in background
+		posterTime := probe.Duration / 2
+		if probe.PosterVersion == sharePreviewPosterVersion {
+			posterTime = probe.PosterTime
+		} else {
+			defer c.refinePosterLater(ctx, src)
+		}
+		args = append(args, "-ss", fmt.Sprintf("%.3f", posterTime))
 	}
 	tmp := c.path(src, suffix+".tmp.jpg")
 	args = append(args, "-i", "file:"+src.resolved, "-frames:v", "1", "-vf", filter,
 		"-q:v", "3", "-update", "1", "file:"+tmp)
-	if out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
+	if out, err := mediaCommand(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("ffmpeg thumbnail: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -620,7 +636,7 @@ func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSo
 	}
 	var embedded []byte
 	for _, tag := range []string{"-JpgFromRaw", "-PreviewImage"} {
-		out, err := exec.CommandContext(ctx, "exiftool", "-b", tag, src.resolved).Output()
+		out, err := mediaCommand(ctx, "exiftool", "-b", tag, src.resolved).Output()
 		if err == nil && len(out) > 2 && out[0] == 0xff && out[1] == 0xd8 {
 			embedded = out
 			break
@@ -634,7 +650,7 @@ func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSo
 		filters = rotate + "," + filters
 	}
 	tmp := c.path(src, suffix+".tmp.jpg")
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-f", "jpeg_pipe", "-i", "pipe:0",
+	cmd := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-f", "jpeg_pipe", "-i", "pipe:0",
 		"-frames:v", "1", "-vf", filters, "-q:v", "3", "-update", "1", "file:"+tmp)
 	cmd.Stdin = bytes.NewReader(embedded)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -654,7 +670,7 @@ func (c *sharePreviewCache) genWaveform(ctx context.Context, src *sharePreviewSo
 	if !probe.HasAudio || probe.Duration <= 0 {
 		return errors.New("no audio stream")
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-i", "file:"+src.resolved,
+	cmd := mediaCommand(ctx, "ffmpeg", "-v", "error", "-i", "file:"+src.resolved,
 		"-map", "0:a:0", "-ac", "1", "-ar", strconv.Itoa(sharePreviewPeaksRate), "-f", "s16le", "pipe:1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -704,7 +720,7 @@ func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePrevi
 	tmpMedia := c.path(src, ".preview.tmp.mp3")
 	// mp3 carries at most two channels, mono sources stay mono
 	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
-	out, err := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
+	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
 		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", "file:"+tmpMedia).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpMedia)
@@ -1107,10 +1123,19 @@ func (s *httpdServer) serveSharePreviewAsset(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer f.Close()
+	modTime := src.info.ModTime()
+	if info, err := f.Stat(); err == nil {
+		// the asset time: a poster replaced by a better pick is a new version
+		modTime = info.ModTime()
+	}
+	if suffix == sharePreviewThumbSuffix || suffix == sharePreviewSmallSuffix {
+		sharePreviews.refineExistingPoster(r.Context(), src)
+	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	http.ServeContent(w, r, "", src.info.ModTime(), f)
+	// revalidated every time (a cheap 304 when unchanged), posters are refined in place
+	w.Header().Set("Cache-Control", "private, no-cache")
+	http.ServeContent(w, r, "", modTime, f)
 }
 
 func (s *httpdServer) handleShareGetPreviewThumb(w http.ResponseWriter, r *http.Request) {
@@ -1621,7 +1646,8 @@ func warmSharePreview(share dataprovider.Share) {
 			continue
 		}
 		gen := asset.gen
-		_, _ = tasks.submit("preview", previewJobName(src, asset.suffix), priorityShare, 0, 10*time.Minute,
+		_, _ = tasks.submit("preview", previewJobName(src, asset.suffix), []string{src.resolved}, priorityShare, 0,
+			10*time.Minute,
 			func(ctx context.Context) error {
 				if _, err := os.Stat(p); err == nil {
 					return nil
@@ -1631,5 +1657,154 @@ func warmSharePreview(share dataprovider.Share) {
 				}
 				return gen(ctx, src)
 			})
+	}
+}
+
+const (
+	posterCandidates = 9
+	posterSampleSize = 160 // candidates are scored on tiny frames
+)
+
+// pickPosterTime picks the moment for a video poster the way YouTube does, sample, filter,
+// score, with cheap measures instead of a neural network: 9 moments between 10% and 90% of the
+// video, 3 consecutive tiny frames each; near-black frames and frames on a cut or a flash are
+// dropped, the rest scored on stillness (concert lights fool sharpness measures, motion between
+// frames is what blurs), contrast, colorfulness and exposure
+func (c *sharePreviewCache) pickPosterTime(ctx context.Context, src *sharePreviewSource, probe sharePreviewProbe) float64 {
+	if probe.Duration <= 0 {
+		return 0
+	}
+	best, bestScore := probe.Duration/2, math.Inf(-1)
+	for i := range posterCandidates {
+		t := probe.Duration * (0.1 + 0.8*float64(i)/float64(posterCandidates-1))
+		frames, err := readTinyFrames(ctx, src.resolved, t, 3)
+		if err != nil || len(frames) < 3 {
+			continue
+		}
+		if score := scorePosterFrames(frames); score > bestScore {
+			// the middle frame of the three
+			best, bestScore = t+1/math.Max(probe.FrameRate, 1), score
+		}
+	}
+	return best
+}
+
+// readTinyFrames decodes count frames from t, scaled to posterSampleSize squared, as RGB
+func readTinyFrames(ctx context.Context, file string, t float64, count int) ([][]byte, error) {
+	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-ss", fmt.Sprintf("%.3f", t), "-i", "file:"+file,
+		"-an", "-sn", "-frames:v", strconv.Itoa(count),
+		"-vf", fmt.Sprintf("scale=%[1]d:%[1]d", posterSampleSize), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1").Output()
+	if err != nil {
+		return nil, err
+	}
+	size := posterSampleSize * posterSampleSize * 3
+	var frames [][]byte
+	for len(out) >= size {
+		frames = append(frames, out[:size])
+		out = out[size:]
+	}
+	return frames, nil
+}
+
+// scorePosterFrames scores three consecutive RGB frames, the middle one being the candidate
+func scorePosterFrames(frames [][]byte) float64 {
+	mid := frames[1]
+	n := float64(len(mid) / 3)
+	var sumL, sumL2, sumRG, sumRG2, sumYB, sumYB2, motion float64
+	for i := 0; i+2 < len(mid); i += 3 {
+		r, g, b := float64(mid[i]), float64(mid[i+1]), float64(mid[i+2])
+		l := (0.299*r + 0.587*g + 0.114*b) / 255
+		sumL += l
+		sumL2 += l * l
+		rg, yb := r-g, 0.5*(r+g)-b
+		sumRG += rg
+		sumRG2 += rg * rg
+		sumYB += yb
+		sumYB2 += yb * yb
+		before := (0.299*float64(frames[0][i]) + 0.587*float64(frames[0][i+1]) + 0.114*float64(frames[0][i+2])) / 255
+		after := (0.299*float64(frames[2][i]) + 0.587*float64(frames[2][i+1]) + 0.114*float64(frames[2][i+2])) / 255
+		motion += math.Abs(after - before)
+	}
+	meanL := sumL / n
+	stdL := math.Sqrt(math.Max(sumL2/n-meanL*meanL, 0))
+	meanRG, meanYB := sumRG/n, sumYB/n
+	stdRG := math.Sqrt(math.Max(sumRG2/n-meanRG*meanRG, 0))
+	stdYB := math.Sqrt(math.Max(sumYB2/n-meanYB*meanYB, 0))
+	// Hasler and Suesstrunk colorfulness
+	colorfulness := math.Sqrt(stdRG*stdRG+stdYB*stdYB) + 0.3*math.Sqrt(meanRG*meanRG+meanYB*meanYB)
+	motion /= n
+	switch {
+	case meanL < 0.06:
+		return -2 // black or nearly
+	case motion > 0.25:
+		return -1 // a cut, a flash or a whip pan
+	}
+	// dark venues: aim at a moderately dark mean rather than mid grey
+	exposure := 1 - math.Min(1, math.Abs(meanL-0.38)/0.38)
+	return 0.35*math.Min(1, stdL/0.25) + 0.25*math.Min(1, colorfulness/60) +
+		0.25*(1-math.Min(1, motion/0.12)) + 0.15*exposure
+}
+
+// refinePosterLater queues the poster pick of a video one priority below the request that
+// needed the poster: the middle frame is shown meanwhile, then replaced in place
+func (c *sharePreviewCache) refinePosterLater(ctx context.Context, src *sharePreviewSource) {
+	if src.kind != sharePreviewVideo {
+		return
+	}
+	priority := min(taskPriorityFrom(ctx)+1, priorityMaintenance)
+	_, _ = tasks.submit("poster", src.key, []string{src.resolved}, priority, time.Hour, 10*time.Minute,
+		func(ctx context.Context) error {
+			probe, err := c.loadProbe(ctx, src)
+			if err != nil || probe.PosterVersion == sharePreviewPosterVersion {
+				return err
+			}
+			probe.PosterTime = c.pickPosterTime(ctx, src, probe)
+			probe.PosterVersion = sharePreviewPosterVersion
+			if err := c.writeProbe(src, probe); err != nil {
+				return err
+			}
+			// redo the posters that exist, at the chosen moment
+			for _, poster := range []struct{ suffix, filter string }{
+				{sharePreviewThumbSuffix, scaleFilter(1280)},
+				{sharePreviewSmallSuffix, squareCropFilter(sharePreviewSmallBox)},
+			} {
+				if _, err := os.Stat(c.path(src, poster.suffix)); err != nil {
+					continue
+				}
+				if err := c.renderStill(ctx, src, poster.filter, poster.suffix); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+}
+
+// refineExistingPoster queues the pick for a video poster made before it existed
+func (c *sharePreviewCache) refineExistingPoster(ctx context.Context, src *sharePreviewSource) {
+	if src.kind != sharePreviewVideo {
+		return
+	}
+	data, err := os.ReadFile(c.path(src, sharePreviewProbeSuffix))
+	if err != nil {
+		return
+	}
+	var probe sharePreviewProbe
+	if json.Unmarshal(data, &probe) == nil && probe.PosterVersion != sharePreviewPosterVersion {
+		c.refinePosterLater(ctx, src)
+	}
+}
+
+// mediaCommand runs ffmpeg, ffprobe or exiftool at the CPU and disk priority of the task that
+// needs it: share work at normal priority, browsing a little lower, maintenance at idle disk
+// priority. The kernel then hands share work the CPU and the disks the moment it needs them,
+// even while other tasks keep running
+func mediaCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	switch taskPriorityFrom(ctx) {
+	case priorityBrowse:
+		return exec.CommandContext(ctx, "nice", append([]string{"-n", "5", name}, args...)...)
+	case priorityMaintenance:
+		return exec.CommandContext(ctx, "nice", append([]string{"-n", "15", "ionice", "-c", "3", name}, args...)...)
+	default:
+		return exec.CommandContext(ctx, name, args...)
 	}
 }
