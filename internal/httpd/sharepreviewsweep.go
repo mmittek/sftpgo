@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,13 @@ func sweepPreviewCache(dir string) int {
 			}
 			continue
 		}
+		if suffix == zipChecksumSuffix {
+			// zip checksums carry their own source signature and survive preview version changes
+			if !zipChecksumsAreCurrent(filepath.Join(cacheDir, name), sourceInfo) {
+				remove(name)
+			}
+			continue
+		}
 		probe, hasProbe := probes[source]
 		if !previewAssetIsCurrent(probe, hasProbe, suffix, info, sourceInfo) {
 			remove(name)
@@ -177,8 +185,18 @@ func previewAssetIsCurrent(probe *sharePreviewProbe, hasProbe bool, suffix strin
 
 // splitPreviewAssetName splits "<source><suffix>" (or a temporary file of it) and returns an
 // empty source for names the preview code does not write
+func zipChecksumsAreCurrent(file string, sourceInfo os.FileInfo) bool {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false
+	}
+	var sums zipChecksums
+	return json.Unmarshal(data, &sums) == nil && sums.Size == sourceInfo.Size() &&
+		sums.Mtime == sourceInfo.ModTime().UnixNano()
+}
+
 func splitPreviewAssetName(name string) (source, suffix string, temp bool) {
-	for _, s := range sharePreviewSuffixes {
+	for _, s := range append(slices.Clone(sharePreviewSuffixes), zipChecksumSuffix) {
 		for _, tempEnd := range []string{".tmp", ".tmp.jpg"} {
 			if strings.HasSuffix(name, s+tempEnd) {
 				return strings.TrimSuffix(name, s+tempEnd), s, true

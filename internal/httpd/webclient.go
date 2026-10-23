@@ -960,7 +960,7 @@ func (s *httpdServer) handleWebClientDownloadZip(w http.ResponseWriter, r *http.
 
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"",
 		getCompressedFileName(connection.GetUsername(), filesList)))
-	renderCompressedFiles(w, connection, name, filesList, nil)
+	serveResumableZip(w, r, connection, name, filesList, nil)
 }
 
 func (s *httpdServer) handleClientSharePartialDownload(w http.ResponseWriter, r *http.Request) {
@@ -1013,7 +1013,7 @@ func (s *httpdServer) handleClientSharePartialDownload(w http.ResponseWriter, r 
 	}
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"",
 		getCompressedFileName(fmt.Sprintf("share-%s", share.Name), filesList)))
-	renderCompressedFiles(w, connection, name, filesList, &share)
+	serveResumableZip(w, r, connection, name, filesList, &share)
 }
 
 func (s *httpdServer) handleShareGetDirContents(w http.ResponseWriter, r *http.Request) {

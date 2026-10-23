@@ -469,7 +469,7 @@ func getUserFilesAsZipStream(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"",
 		getCompressedFileName(connection.GetUsername(), filesList)))
-	renderCompressedFiles(w, connection, baseDir, filesList, nil)
+	serveResumableZip(w, r, connection, baseDir, filesList, nil)
 }
 
 func getUserProfile(w http.ResponseWriter, r *http.Request) {

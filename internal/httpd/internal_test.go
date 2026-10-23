@@ -17,6 +17,7 @@ package httpd
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -5026,4 +5027,142 @@ func TestPreviewCacheSweep(t *testing.T) {
 	}
 	sweepPreviewCache(dir)
 	assert.NoDirExists(t, cache)
+}
+
+// zipReaderAt serves an archive through writeRange, so zip.NewReader reads it by ranges like
+// a resuming client would
+type zipReaderAt struct {
+	layout *zipLayout
+	conn   *Connection
+}
+
+func (z zipReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off >= z.layout.total {
+		return 0, io.EOF
+	}
+	end := min(off+int64(len(p)), z.layout.total) - 1
+	var buf bytes.Buffer
+	if err := z.layout.writeRange(&buf, z.conn, off, end); err != nil {
+		return 0, err
+	}
+	n := copy(p, buf.Bytes())
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestResumableZip(t *testing.T) {
+	home := t.TempDir()
+	user := dataprovider.User{BaseUser: sdk.BaseUser{HomeDir: home}}
+	user.Permissions = map[string][]string{"/": {dataprovider.PermAny}}
+	conn := newConnection(common.NewBaseConnection(xid.New().String(), common.ProtocolHTTP, "", "", user), nil, nil)
+	saved := zipCheckpointEvery
+	zipCheckpointEvery = 1 << 20
+	defer func() { zipCheckpointEvery = saved }()
+
+	files := map[string][]byte{"a/b.bin": make([]byte, 3<<20+12345), "c.txt": []byte("hello"), "empty.txt": {}}
+	_, err := rand.Read(files["a/b.bin"])
+	assert.NoError(t, err)
+	for name, data := range files {
+		assert.NoError(t, os.MkdirAll(filepath.Join(home, filepath.Dir(name)), 0o755))
+		assert.NoError(t, os.WriteFile(filepath.Join(home, name), data, 0o644))
+	}
+	assert.NoError(t, os.MkdirAll(filepath.Join(home, "sub", "emptydir"), 0o755))
+
+	full := func() ([]byte, *zipLayout) {
+		layout, err := buildZipLayout(conn, "/", []string{"/"})
+		assert.NoError(t, err)
+		var buf bytes.Buffer
+		assert.NoError(t, layout.writeRange(&buf, conn, 0, layout.total-1))
+		assert.Equal(t, layout.total, int64(buf.Len()))
+		return buf.Bytes(), layout
+	}
+	archive, layout := full()
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	assert.NoError(t, err)
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+		if data, ok := files[f.Name]; ok {
+			assert.Equal(t, zip.Store, f.Method)
+			rc, err := f.Open()
+			assert.NoError(t, err)
+			got, err := io.ReadAll(rc) // checks the CRC-32 at EOF
+			assert.NoError(t, err, f.Name)
+			assert.Equal(t, data, got, f.Name)
+			rc.Close()
+		}
+	}
+	assert.Equal(t, []string{"a/", "a/b.bin", "c.txt", "empty.txt", "sub/", "sub/emptydir/"}, names)
+	assert.FileExists(t, filepath.Join(home, "a", sharePreviewCacheDir, "b.bin"+zipChecksumSuffix))
+
+	// a resume from any byte, by a new request, gives the same bytes: with the saved checksums
+	// and, after wiping them, by reading the files again
+	cuts := []int64{1, 40, int64(len(layout.entries[1].header)) + 100, 1 << 20, 2<<20 + 77, layout.centralOffset - 3,
+		layout.centralOffset + 5, layout.total - 10}
+	for _, wipe := range []bool{false, true} {
+		for _, cut := range cuts {
+			if wipe {
+				assert.NoError(t, os.RemoveAll(filepath.Join(home, "a", sharePreviewCacheDir)))
+				assert.NoError(t, os.RemoveAll(filepath.Join(home, sharePreviewCacheDir)))
+			}
+			resumed, err := buildZipLayout(conn, "/", []string{"/"})
+			assert.NoError(t, err)
+			assert.Equal(t, layout.etag, resumed.etag)
+			var tail bytes.Buffer
+			assert.NoError(t, resumed.writeRange(&tail, conn, cut, resumed.total-1))
+			assert.Equal(t, archive[cut:], tail.Bytes(), "cut at %d, wiped %t", cut, wipe)
+		}
+	}
+	// a changed file changes the archive identity, so If-Range sends a full download
+	future := time.Now().Add(time.Hour)
+	assert.NoError(t, os.Chtimes(filepath.Join(home, "c.txt"), future, future))
+	_, changed := full()
+	assert.NotEqual(t, layout.etag, changed.etag)
+
+	for header, expected := range map[string][3]int64{
+		"bytes=0-9": {0, 9, 1}, "bytes=10-": {10, 99, 1}, "bytes=-5": {95, 99, 1}, "bytes=50-500": {50, 99, 1},
+		"bytes=100-": {0, 0, 0}, "bytes=5-2": {0, 0, 0}, "bytes=1-2,4-5": {0, 0, 0}, "items=1-2": {0, 0, 0},
+	} {
+		s, e, ok := parseZipRange(header, 100)
+		assert.Equal(t, expected[2] == 1, ok, header)
+		if ok {
+			assert.Equal(t, []int64{expected[0], expected[1]}, []int64{s, e}, header)
+		}
+	}
+}
+
+func TestResumableZip64(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reads a 4.5 GiB sparse file")
+	}
+	home := t.TempDir()
+	user := dataprovider.User{BaseUser: sdk.BaseUser{HomeDir: home}}
+	user.Permissions = map[string][]string{"/": {dataprovider.PermAny}}
+	conn := newConnection(common.NewBaseConnection(xid.New().String(), common.ProtocolHTTP, "", "", user), nil, nil)
+	big := filepath.Join(home, "big.bin")
+	f, err := os.Create(big)
+	assert.NoError(t, err)
+	_, err = f.WriteAt([]byte("tail marker"), 4608<<20-11)
+	assert.NoError(t, err)
+	assert.NoError(t, f.Close())
+	assert.NoError(t, os.WriteFile(filepath.Join(home, "small.txt"), []byte("after the big one"), 0o644))
+
+	layout, err := buildZipLayout(conn, "/", []string{"/big.bin", "/small.txt"})
+	assert.NoError(t, err)
+	assert.True(t, layout.entries[1].offset > zipMax32)
+	zr, err := zip.NewReader(zipReaderAt{layout: layout, conn: conn}, layout.total)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(4608<<20), zr.File[0].UncompressedSize64)
+	rc, err := zr.File[1].Open()
+	assert.NoError(t, err)
+	got, err := io.ReadAll(rc)
+	assert.NoError(t, err)
+	assert.Equal(t, "after the big one", string(got))
+	rc, err = zr.File[0].Open()
+	assert.NoError(t, err)
+	n, err := io.Copy(io.Discard, rc) // the CRC-32 is checked at EOF
+	assert.NoError(t, err)
+	assert.Equal(t, int64(4608<<20), n)
 }

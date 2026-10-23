@@ -306,9 +306,12 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if err := dataprovider.UpdateShareLastUse(&share, 1); err != nil {
-		sendAPIResponse(w, r, err, "", getRespStatus(err))
-		return
+	// fork: a resumed zip download is the same download, it does not count as a new use
+	if !compress || !isZipResume(r) {
+		if err := dataprovider.UpdateShareLastUse(&share, 1); err != nil {
+			sendAPIResponse(w, r, err, "", getRespStatus(err))
+			return
+		}
 	}
 	if compress {
 		transferQuota := connection.GetTransferQuota()
@@ -327,7 +330,7 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 			files = []string{"/"}
 		}
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"share-%v.zip\"", share.Name))
-		renderCompressedFiles(w, connection, baseDir, files, &share)
+		serveResumableZip(w, r, connection, baseDir, files, &share)
 		return
 	}
 	if status, err := downloadFile(w, r, connection, share.Paths[0], info, false, &share); err != nil {

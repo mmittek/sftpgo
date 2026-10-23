@@ -15715,8 +15715,8 @@ func TestShareDirDownloadPreservesPaths(t *testing.T) {
 		}
 		return names
 	}
-	// zip entry names are relative to the shared directory
-	assert.Equal(t, []string{"/", sharedFileName}, getZipEntries())
+	// zip entry names are relative to the shared directory (fork: without a "/" root entry)
+	assert.Equal(t, []string{sharedFileName}, getZipEntries())
 	// downloading the whole share must not expand the shared paths
 	req, err = http.NewRequest(http.MethodGet, path.Join(userSharesPath, objectID), nil)
 	assert.NoError(t, err)
@@ -15735,7 +15735,7 @@ func TestShareDirDownloadPreservesPaths(t *testing.T) {
 	rr = executeRequest(req)
 	checkResponseCode(t, http.StatusNotFound, rr)
 	// a new download returns the same archive
-	assert.Equal(t, []string{"/", sharedFileName}, getZipEntries())
+	assert.Equal(t, []string{sharedFileName}, getZipEntries())
 
 	_, err = httpdtest.RemoveUser(user, http.StatusOK)
 	assert.NoError(t, err)
