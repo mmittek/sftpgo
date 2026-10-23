@@ -50,6 +50,8 @@ COPY --from=builder /workspace/sftpgo.json /etc/sftpgo/sftpgo.json
 COPY --from=builder /workspace/templates /usr/share/sftpgo/templates
 COPY --from=builder /workspace/static /usr/share/sftpgo/static
 COPY --from=builder /workspace/openapi /usr/share/sftpgo/openapi
+# the pixel font built into the binary for the audio card videos, shipped with its license (SIL OFL)
+COPY --from=builder /workspace/internal/httpd/fonts /usr/share/sftpgo/fonts
 COPY --from=builder /workspace/sftpgo /usr/local/bin/sftpgo-plugin-* /usr/local/bin/
 
 # Log to the stdout so the logs will be available using docker logs
