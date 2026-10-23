@@ -56,7 +56,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         <span class="path1"></span>
                         <span class="path2"></span>
                     </i>
-                    <span>Download this folder (.zip)</span>
+                    <span>Download subfolder (.zip)</span>
                 </a>
                 {{- end}}
                 {{- if .ShareZipURL}}
@@ -109,7 +109,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         {{- if .ShareZipURL}}
         <div class="mb-8">
             {{- if .ShareFolderZipURL}}
-            <label for="share_folder_zip_url" class="form-label fs-7 fw-semibold text-gray-600 mb-2">Download link for this folder (.zip)</label>
+            <label for="share_folder_zip_url" class="form-label fs-7 fw-semibold text-gray-600 mb-2">Download link for this subfolder (.zip)</label>
             <div class="input-group mb-4">
                 <input id="share_folder_zip_url" type="text" class="form-control form-control-solid fs-7 share-copy-input" value="{{.ShareFolderZipURL}}" readonly>
                 <button type="button" class="btn btn-light-primary fw-semibold share-copy-button">
