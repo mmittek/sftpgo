@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "2222:2222"
+      - "80:80"
       - "443:443"
       - "${ADMIN_BIND_IP}:8081:8081"
     environment:
