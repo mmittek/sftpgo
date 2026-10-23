@@ -47,7 +47,7 @@ const (
 	sharePreviewVideo = "video"
 
 	// version of the generated assets, bump it to regenerate every preview after changing a recipe
-	sharePreviewAssetsVersion = "3"
+	sharePreviewAssetsVersion = "4"
 	// version of the probe alone: adding details redoes only the small probe files
 	sharePreviewProbeVersion = "5"
 	sharePreviewCacheDir     = ".cache"
@@ -582,7 +582,7 @@ func (c *sharePreviewCache) genSmallThumb(ctx context.Context, src *sharePreview
 }
 
 // renderStill writes a JPEG of the image itself, of the embedded rendering of a camera raw
-// file or of a video frame at 10% of the duration, through the given scale filter
+// file or of the video frame in the middle of the video, through the given scale filter
 func (c *sharePreviewCache) renderStill(ctx context.Context, src *sharePreviewSource, filter, suffix string) error {
 	if sharePreviewRawExts[strings.ToLower(filepath.Ext(src.resolved))] {
 		return c.genRawThumb(ctx, src, filter, suffix)
@@ -597,7 +597,7 @@ func (c *sharePreviewCache) renderStill(ctx context.Context, src *sharePreviewSo
 		if err != nil {
 			return err
 		}
-		args = append(args, "-ss", fmt.Sprintf("%.2f", math.Min(probe.Duration*0.1, 30)))
+		args = append(args, "-ss", fmt.Sprintf("%.2f", probe.Duration/2))
 	}
 	tmp := c.path(src, suffix+".tmp.jpg")
 	args = append(args, "-i", "file:"+src.resolved, "-frames:v", "1", "-vf", filter,
