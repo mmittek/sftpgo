@@ -59,6 +59,8 @@ const (
 	sharePreviewAudioSuffix   = ".preview.mp3"
 	// audio as a video, the branded waveform over the sound, for chats that only play videos inline
 	sharePreviewCardVideoSuffix = ".card.mp4"
+	// version of what is stamped on the audio waveform card when it is served
+	sharePreviewCardStyle = "2"
 	// tiny thumbnail for file lists
 	sharePreviewSmallSuffix = ".thumb-sm.jpg"
 	sharePreviewSmallBox    = 256
@@ -776,6 +778,18 @@ func queueCardVideo(src *sharePreviewSource) {
 		})
 }
 
+// stampWaveformText writes the file name on top of a 1200x630 waveform card and the details at
+// the bottom left, clear of the logo
+func stampWaveformText(img *image.RGBA, src *sharePreviewSource, probe sharePreviewProbe) {
+	width, height := img.Bounds().Dx(), img.Bounds().Dy()
+	details := strings.Join(append(append([]string{"Audio", formatPreviewDuration(probe.Duration)},
+		formatPreviewAudio(probe)...), util.ByteCountIEC(src.info.Size())), " | ")
+	drawCardText(img, path.Base(src.name), 24, true, waveformMargin, 44, width-2*waveformMargin,
+		color.RGBA{0xf4, 0xf1, 0xff, 255})
+	drawCardText(img, details, 16, false, waveformMargin, height-24, width-2*waveformMargin-200,
+		color.RGBA{0xa9, 0xa3, 0xc4, 255})
+}
+
 // genCardVideo renders the audio as a small mp4, the branded waveform as a still picture at one
 // frame per second over 128 kbps AAC, so chats that play only videos inline (Discord) can
 // play the share in the link card. About 1 MB per minute
@@ -812,15 +826,9 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	})
 	stills := []string{c.path(src, ".card.tmp.jpg"), c.path(src, ".card-gray.tmp.jpg")}
 	tmpVideo := c.path(src, ".card.tmp.mp4")
-	title := path.Base(src.name)
-	details := strings.Join(append(append([]string{"Audio", formatPreviewDuration(probe.Duration)},
-		formatPreviewAudio(probe)...), util.ByteCountIEC(src.info.Size())), " | ")
 	for idx, img := range []*image.RGBA{played, unplayed} {
 		defer os.Remove(stills[idx])
-		// the file name on top, the details at the bottom left, clear of the logo
-		drawCardText(img, title, 24, true, waveformMargin, 44, width-2*waveformMargin, color.RGBA{0xf4, 0xf1, 0xff, 255})
-		drawCardText(img, details, 16, false, waveformMargin, height-24, width-2*waveformMargin-200,
-			color.RGBA{0xa9, 0xa3, 0xc4, 255})
+		stampWaveformText(img, src, probe)
 		if shareCardLogo != nil {
 			if logo, _ := shareCardLogo(); logo != nil {
 				stampLogo(img, logo, height/7, height/18)
@@ -1225,6 +1233,10 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 	version := "pending"
 	if info, err := os.Stat(sharePreviews.path(src, sharePreviewThumbSuffix)); err == nil {
 		version = strconv.FormatInt(info.ModTime().Unix(), 10)
+		if src.kind == sharePreviewAudio {
+			// the text and logo are stamped when served: a new card style is a new address
+			version += "-" + sharePreviewCardStyle
+		}
 	} else {
 		preview.ThumbWidth, preview.ThumbHeight = 1200, 630
 	}
@@ -1625,6 +1637,9 @@ func (s *httpdServer) serveBrandedWaveform(w http.ResponseWriter, r *http.Reques
 	}
 	img := image.NewRGBA(waveform.Bounds())
 	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
+	if probe, err := sharePreviews.probe(ctx, src); err == nil {
+		stampWaveformText(img, src, probe)
+	}
 	modTime := src.info.ModTime()
 	if logo, updated := s.brandingLogo(); logo != nil {
 		stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
