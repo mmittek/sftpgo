@@ -10,6 +10,8 @@ A fork of [drakkan/sftpgo](https://github.com/drakkan/sftpgo) that runs the DPM 
 - **Default share max tokens.** A per-user setting (admin > Users > Profile) for the use limit of new shares. `0` means unlimited.
 - **Default expiration.** New shares use SFTPGo's built-in per-user "Default shares expiration".
 - **Shares list.** A Created column, sorted newest first.
+- **Folder shares: Download all (.zip).** A button on the folder share page and the zip link in a read-only field with a Copy button.
+- **Zips without compression.** Every web zip download (the share zip link, a selection in a folder share or in the web client, the REST API) stores the files without compressing them. The zip is built while it streams, nothing is prepared first, and storing runs as fast as the disks deliver; media files do not shrink anyway, and the zips are for keeping files organized.
 - **Hidden entries stay out of public shares.** Names starting with a dot (`.cache`, `.tmp`, `.DS_Store`, macOS `._` files) and everything inside dot folders are not listed, not added to zip downloads and cannot be downloaded through a public share, even when requested by path. The owner still sees them over SFTP, WebDAV and the logged-in web client. This is done by merging a hide rule for `.*` into the owner's pattern rules on every share connection (`internal/httpd/sharehidden.go`).
 
 ### Media previews for single-file shares
