@@ -85,42 +85,38 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             <div class="modal-body fs-5">
                 <div id="readShare" class="mb-5">
                     <div id="linkZip" class="share-link-section mb-3">
-                        <h4 data-i18n="share.link_single_title">Single zip file</h4>
-                        <p data-i18n="share.link_single_desc">You can download shared content as a single zip file</p>
-                        <div class="d-flex">
-                            <button id="readLinkCopy" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy me-3">
+                        <h4>Single .zip</h4>
+                        <p>The direct link downloads everything as one zip file, no page in between.</p>
+                        <div class="input-group">
+                            <input id="readZipURL" type="text" class="form-control form-control-solid fs-7" readonly aria-label="Zip download link" />
+                            <button id="readLinkCopy" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy" data-copy-label="Copy link">
                                 <i class="ki-duotone ki-fasten fs-2">
                                     <span class="path1"></span>
                                     <span class="path2"></span>
                                 </i>
-                                <span data-i18n="general.copy_link">Copy link</span>
+                                <span class="copy-label">Copy link</span>
                             </button>
-                            <a id="readLink" href="#" target="_blank" rel="noopener noreferrer" type="button" class="btn btn-flex btn-primary">
-                                <i class="ki-duotone ki-folder-down fs-2">
-                                    <span class="path1"></span>
-                                    <span class="path2"></span>
-                                </i>
-                                <span data-i18n="fs.download">Download</span>
-                            </a>
                         </div>
                     </div>
                     <div id="linkBrowse" class="share-link-section mb-3">
-                        <h4 data-i18n="share.link_dir_title">Single directory</h4>
-                        <p data-i18n="share.link_dir_desc">If the share consists of a single directory you can browse and download files</p>
-                        <button id="readBrowseLinkCopy" data-clipboard-target="#readBrowseLink" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy me-3">
-                            <i class="ki-duotone ki-fasten fs-2">
-                                <span class="path1"></span>
-                                <span class="path2"></span>
-                            </i>
-                            <span data-i18n="general.copy_link">Copy link</span>
-                        </button>
-                        <a id="readBrowseLink" href="#" target="_blank" rel="noopener noreferrer" type="button" class="btn btn-flex btn-primary">
-                            <i class="ki-duotone ki-arrow-up-right fs-2">
-                                <span class="path1"></span>
-                                <span class="path2"></span>
-                            </i>
-                            <span data-i18n="share.go">Go to share</span>
-                        </a>
+                        <h4>Landing page</h4>
+                        <p id="readLandingDesc">The share page, where people browse the files and download them.</p>
+                        <div class="d-flex flex-column align-items-start gap-3">
+                            <button id="readBrowseLinkCopy" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy" data-copy-label="Copy landing page link">
+                                <i class="ki-duotone ki-fasten fs-2">
+                                    <span class="path1"></span>
+                                    <span class="path2"></span>
+                                </i>
+                                <span class="copy-label">Copy landing page link</span>
+                            </button>
+                            <a id="readBrowseLink" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-flex btn-primary">
+                                <i class="ki-duotone ki-arrow-up-right fs-2">
+                                    <span class="path1"></span>
+                                    <span class="path2"></span>
+                                </i>
+                                <span>Go to share</span>
+                            </a>
+                        </div>
                     </div>
                     <div id="linkFile" class="share-link-section">
                         <h4>Single file</h4>
@@ -255,7 +251,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
     function showShareSections(kind) {
         const visible = {
             linkZip: kind !== 'file',
-            linkBrowse: kind === 'folder' || !kind,
+            linkBrowse: kind !== 'file',
             linkFile: kind === 'file' || !kind,
         };
         let first = true;
@@ -293,16 +289,21 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 $('#writeShare').hide();
                 showShareSections(kind);
                 $('#readShare').show();
-                $('#readLink').attr("href", shareURL + "/download");
-                $('#readLink').attr("title", shareURL + "/download");
-                $('#readLinkCopy').attr("data-clipboard-text",baseURL+shareURL + "/download");
+                // the share address itself streams the zip, the landing page is the folder view
+                // (or the zip page listing the files, for shares of several items)
+                $('#readZipURL').val(baseURL + shareURL);
+                $('#readLinkCopy').attr("data-clipboard-text", baseURL + shareURL);
+                const landing = kind === 'folder' ? shareURL + "/browse" : shareURL + "/download";
+                $('#readLandingDesc').text(kind === 'folder' ?
+                    'The share page, where people browse the files and download them.' :
+                    'The share page, listing the files with a button to download them as one zip.');
                 $('#readLandingCopy').attr("data-clipboard-text", baseURL + shareURL + "/download");
                 $('#readDirectCopy').attr("data-clipboard-text", baseURL + shareURL);
                 $('#readDirectURL').val(baseURL + shareURL);
                 $('#readDirectDownload').attr("href", shareURL);
-                $('#readBrowseLink').attr("href", shareURL + "/browse");
-                $('#readBrowseLink').attr("title", shareURL + "/browse");
-                $('#readBrowseLinkCopy').attr("data-clipboard-text",baseURL+shareURL + "/browse");
+                $('#readBrowseLink').attr("href", landing);
+                $('#readBrowseLink').attr("title", landing);
+                $('#readBrowseLinkCopy').attr("data-clipboard-text", baseURL + landing);
             } else {
                 $('#expiredShare').hide();
                 $('#writeShare').show();
