@@ -46,12 +46,14 @@ const (
 
 	// version of the generated assets, bump it to regenerate every preview after changing a recipe
 	sharePreviewAssetsVersion = "3"
-	sharePreviewCacheDir      = ".cache"
-	sharePreviewProbeSuffix   = ".probe.json"
-	sharePreviewThumbSuffix   = ".thumb.jpg"
-	sharePreviewPeaksSuffix   = ".peaks.json"
-	sharePreviewAudioSuffix   = ".preview.mp3"
-	sharePreviewPeaks         = 1800
+	// version of the probe alone: adding details redoes only the small probe files
+	sharePreviewProbeVersion = "2"
+	sharePreviewCacheDir     = ".cache"
+	sharePreviewProbeSuffix  = ".probe.json"
+	sharePreviewThumbSuffix  = ".thumb.jpg"
+	sharePreviewPeaksSuffix  = ".peaks.json"
+	sharePreviewAudioSuffix  = ".preview.mp3"
+	sharePreviewPeaks        = 1800
 	// sample rate of the decimated stream used to compute the waveform peaks
 	sharePreviewPeaksRate = 4000
 	// chat apps refuse to play large videos inline, above this size only the poster is advertised
@@ -112,18 +114,21 @@ type sharePreview struct {
 type sharePreviewProbe struct {
 	Duration   float64 `json:"duration"`
 	VideoCodec string  `json:"video_codec"`
-	Width      int     `json:"width"`
-	Height     int     `json:"height"`
-	HasAudio   bool    `json:"has_audio"`
-	Channels   int     `json:"channels"`
-	SampleRate int     `json:"sample_rate"`
+	// VideoBitRate is the video stream bit rate, or the whole file one when the stream has none
+	VideoBitRate int64 `json:"video_bit_rate"`
+	Width        int   `json:"width"`
+	Height       int   `json:"height"`
+	HasAudio     bool  `json:"has_audio"`
+	Channels     int   `json:"channels"`
+	SampleRate   int   `json:"sample_rate"`
 	// BitDepth is set for lossless audio only, lossy codecs have no meaningful bit depth
 	BitDepth   int  `json:"bit_depth"`
 	FloatAudio bool `json:"float_audio"`
 	// the source this probe and the other cached assets were made from
-	SourceSize  int64  `json:"source_size"`
-	SourceMtime int64  `json:"source_mtime"`
-	Version     string `json:"version"`
+	SourceSize   int64  `json:"source_size"`
+	SourceMtime  int64  `json:"source_mtime"`
+	Version      string `json:"version"`
+	ProbeVersion string `json:"probe_version"`
 }
 
 // sharePreviewSource is a validated single shared file that can be read locally by ffmpeg
@@ -161,6 +166,9 @@ func (c *sharePreviewCache) dropStale(src *sharePreviewSource) {
 	var probe sharePreviewProbe
 	if json.Unmarshal(data, &probe) == nil && probe.SourceSize == src.info.Size() &&
 		probe.SourceMtime == src.info.ModTime().UnixNano() && probe.Version == sharePreviewAssetsVersion {
+		if probe.ProbeVersion != sharePreviewProbeVersion {
+			_ = os.Remove(c.path(src, sharePreviewProbeSuffix))
+		}
 		return
 	}
 	for _, suffix := range sharePreviewSuffixes {
@@ -268,12 +276,14 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 			SampleRate    string `json:"sample_rate"`
 			BitsPerSample int    `json:"bits_per_sample"`
 			BitsPerRaw    string `json:"bits_per_raw_sample"`
+			BitRate       string `json:"bit_rate"`
 			Disposition   struct {
 				AttachedPic int `json:"attached_pic"`
 			} `json:"disposition"`
 		} `json:"streams"`
 		Format struct {
 			Duration string `json:"duration"`
+			BitRate  string `json:"bit_rate"`
 		} `json:"format"`
 	}
 	if err := json.Unmarshal(out, &res); err != nil {
@@ -287,6 +297,10 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 			// the first real video stream, embedded cover art and previews come later
 			if probe.VideoCodec == "" && s.Disposition.AttachedPic == 0 {
 				probe.VideoCodec, probe.Width, probe.Height = s.CodecName, s.Width, s.Height
+				probe.VideoBitRate, _ = strconv.ParseInt(s.BitRate, 10, 64)
+				if probe.VideoBitRate == 0 {
+					probe.VideoBitRate, _ = strconv.ParseInt(res.Format.BitRate, 10, 64)
+				}
 			}
 		case "audio":
 			if probe.HasAudio {
@@ -305,7 +319,7 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 		}
 	}
 	probe.SourceSize, probe.SourceMtime = src.info.Size(), src.info.ModTime().UnixNano()
-	probe.Version = sharePreviewAssetsVersion
+	probe.Version, probe.ProbeVersion = sharePreviewAssetsVersion, sharePreviewProbeVersion
 	data, err := json.Marshal(probe)
 	if err != nil {
 		return err
@@ -564,6 +578,29 @@ func formatPreviewAudio(probe sharePreviewProbe) []string {
 }
 
 // formatPreviewDuration rounds down like the browser players do, so page and player agree
+// formatPreviewVideo describes the video stream, for example "H.264 · 109 Mbps"
+func formatPreviewVideo(probe sharePreviewProbe) []string {
+	var parts []string
+	if probe.VideoCodec != "" {
+		names := map[string]string{"h264": "H.264", "hevc": "HEVC", "prores": "ProRes", "av1": "AV1",
+			"vp9": "VP9", "vp8": "VP8", "mpeg4": "MPEG-4", "dnxhd": "DNxHD", "mjpeg": "MJPEG"}
+		name, ok := names[probe.VideoCodec]
+		if !ok {
+			name = strings.ToUpper(probe.VideoCodec)
+		}
+		parts = append(parts, name)
+	}
+	switch rate := float64(probe.VideoBitRate); {
+	case rate >= 10e6:
+		parts = append(parts, fmt.Sprintf("%.0f Mbps", rate/1e6))
+	case rate >= 1e6:
+		parts = append(parts, fmt.Sprintf("%.1f Mbps", rate/1e6))
+	case rate > 0:
+		parts = append(parts, fmt.Sprintf("%.0f kbps", rate/1e3))
+	}
+	return parts
+}
+
 func formatPreviewDuration(seconds float64) string {
 	s := int(seconds)
 	if s >= 3600 {
@@ -627,8 +664,8 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
 		preview.OGVideo = probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize
-		details = append([]string{"Video", formatPreviewDuration(probe.Duration),
-			fmt.Sprintf("%dx%d", probe.Width, probe.Height)}, details...)
+		details = append(append([]string{"Video", formatPreviewDuration(probe.Duration),
+			fmt.Sprintf("%dx%d", probe.Width, probe.Height)}, formatPreviewVideo(probe)...), details...)
 	}
 	preview.Details = details[1:] // the page shows the kind as the file type chip instead
 	preview.FileType = strings.ToUpper(strings.TrimPrefix(path.Ext(src.name), "."))

@@ -4903,6 +4903,9 @@ func TestSharePreviewPeaksAndDuration(t *testing.T) {
 	assert.Equal(t, []string{"Mono", "44.1 kHz", "32-bit float"},
 		formatPreviewAudio(sharePreviewProbe{Channels: 1, SampleRate: 44100, BitDepth: 32, FloatAudio: true}))
 	assert.Equal(t, []string{"6 channels", "48 kHz"}, formatPreviewAudio(sharePreviewProbe{Channels: 6, SampleRate: 48000}))
+	assert.Equal(t, []string{"H.264", "109 Mbps"}, formatPreviewVideo(sharePreviewProbe{VideoCodec: "h264", VideoBitRate: 109_224_000}))
+	assert.Equal(t, []string{"HEVC", "8.5 Mbps"}, formatPreviewVideo(sharePreviewProbe{VideoCodec: "hevc", VideoBitRate: 8_500_000}))
+	assert.Equal(t, []string{"THEORA", "950 kbps"}, formatPreviewVideo(sharePreviewProbe{VideoCodec: "theora", VideoBitRate: 950_000}))
 	img := renderWaveform(peaks, 300, 100)
 	assert.Equal(t, 300, img.Bounds().Dx())
 }
