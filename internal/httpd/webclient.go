@@ -144,7 +144,9 @@ type filesPage struct {
 	CanShare           bool
 	CanCopy            bool
 	ShareUploadBaseURL string
-	Error              *util.I18nError
+	// ShareZipURL downloads the whole shared folder as a zip (absolute, shown for copying)
+	ShareZipURL string
+	Error       *util.I18nError
 	Paths              []dirMapping
 	QuotaUsage         *userQuotaUsage
 	KeepAliveInterval  int
@@ -808,6 +810,9 @@ func (s *httpdServer) renderSharedFilesPage(w http.ResponseWriter, r *http.Reque
 		Paths:              getDirMapping(dirName, currentURL),
 		QuotaUsage:         newUserQuotaUsage(&dataprovider.User{}),
 		KeepAliveInterval:  int(cookieRefreshThreshold / time.Millisecond),
+	}
+	if data.CanDownload {
+		data.ShareZipURL = getRequestBaseURL(r) + baseSharePath
 	}
 	renderClientTemplate(w, templateClientFiles, data)
 }

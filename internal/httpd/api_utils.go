@@ -459,7 +459,7 @@ func addZipEntry(wr *zip.Writer, conn *Connection, entryPath, baseDir string, in
 	if info.IsDir() {
 		_, err = wr.CreateHeader(&zip.FileHeader{
 			Name:     entryName + "/",
-			Method:   zip.Deflate,
+			Method:   zip.Store, // fork: no compression, zips are for file organization and media does not shrink
 			Modified: info.ModTime(),
 		})
 		if err != nil {
@@ -508,7 +508,7 @@ func addFileToZipEntry(wr *zip.Writer, conn *Connection, entryPath, entryName st
 
 	f, err := wr.CreateHeader(&zip.FileHeader{
 		Name:     entryName,
-		Method:   zip.Deflate,
+		Method:   zip.Store, // fork: no compression, zips are for file organization and media does not shrink
 		Modified: info.ModTime(),
 	})
 	if err != nil {
