@@ -60,7 +60,7 @@ const (
 	// audio as a video, the branded waveform over the sound, for chats that only play videos inline
 	sharePreviewCardVideoSuffix = ".card.mp4"
 	// version of what is stamped on the audio waveform card when it is served
-	sharePreviewCardStyle = "2"
+	sharePreviewCardStyle = "3"
 	// tiny thumbnail for file lists
 	sharePreviewSmallSuffix = ".thumb-sm.jpg"
 	sharePreviewSmallBox    = 256
@@ -869,15 +869,13 @@ func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePrevi
 	return os.Rename(tmpVideo, c.path(src, sharePreviewCardVideoSuffix))
 }
 
-// stampWaveformText writes the file name on top of a 1200x630 waveform card and the details at
-// the bottom left, clear of the logo
-func stampWaveformText(img *image.RGBA, src *sharePreviewSource, probe sharePreviewProbe) {
+// stampWaveformText writes the file name on top of a 1200x630 waveform card and PREVIEW at the
+// bottom left, clear of the logo: what plays is a preview copy, not the original quality
+func stampWaveformText(img *image.RGBA, src *sharePreviewSource) {
 	width, height := img.Bounds().Dx(), img.Bounds().Dy()
-	details := strings.Join(append(append([]string{"Audio", formatPreviewDuration(probe.Duration)},
-		formatPreviewAudio(probe)...), util.ByteCountIEC(src.info.Size())), " | ")
 	drawCardText(img, path.Base(src.name), 24, true, waveformMargin, 44, width-2*waveformMargin,
 		color.RGBA{0xf4, 0xf1, 0xff, 255})
-	drawCardText(img, details, 16, false, waveformMargin, height-24, width-2*waveformMargin-200,
+	drawCardText(img, "PREVIEW", 16, false, waveformMargin, height-24, width-2*waveformMargin-200,
 		color.RGBA{0xa9, 0xa3, 0xc4, 255})
 }
 
@@ -922,7 +920,7 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	tmpVideo := c.path(src, ".card.tmp.mp4")
 	for idx, img := range []*image.RGBA{played, unplayed} {
 		defer os.Remove(stills[idx])
-		stampWaveformText(img, src, probe)
+		stampWaveformText(img, src)
 		if shareCardLogo != nil {
 			if logo, _ := shareCardLogo(); logo != nil {
 				stampLogo(img, logo, height/7, height/18)
@@ -1751,9 +1749,7 @@ func (s *httpdServer) serveBrandedWaveform(w http.ResponseWriter, r *http.Reques
 	}
 	img := image.NewRGBA(waveform.Bounds())
 	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
-	if probe, err := sharePreviews.probe(ctx, src); err == nil {
-		stampWaveformText(img, src, probe)
-	}
+	stampWaveformText(img, src)
 	modTime := src.info.ModTime()
 	if logo, updated := s.brandingLogo(); logo != nil {
 		stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
