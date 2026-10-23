@@ -34,6 +34,8 @@ services:
       - SFTPGO_COMMON__DEFENDER__SAFE_LIST_FILE=/var/lib/sftpgo/safelist.txt
       - SFTPGO_COMMON__UPLOAD_MODE=2
       - SFTPGO_HTTPD__MAX_UPLOAD_FILE_SIZE=0
+      - SHARE_PREVIEWS_DIR=/var/lib/sftpgo/previews
+      - SHARE_PREVIEWS_MAX_SIZE_MB=4096
     volumes:
       - ${STORAGEPOOL_PATH}:/srv/sftpgo/data
       - ${DATA_PATH}:/var/lib/sftpgo

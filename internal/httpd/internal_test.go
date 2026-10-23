@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4877,4 +4878,22 @@ func TestGetDefaultShareName(t *testing.T) {
 	assert.Equal(t, "storagepool", getDefaultShareName("/storagepool", true, ""))
 	assert.Equal(t, "/", getDefaultShareName("/", true, ""))
 	assert.Len(t, getDefaultShareName("/"+strings.Repeat("é", 200)+"/x", true, ""), 254)
+}
+
+func TestSharePreviewPeaksAndDuration(t *testing.T) {
+	var buf bytes.Buffer
+	for i := 0; i < 1000; i++ {
+		v := int16(100)
+		if i == 750 {
+			v = -2000
+		}
+		_ = binary.Write(&buf, binary.LittleEndian, v)
+	}
+	peaks := computePeaks(&buf, 1000, 4)
+	assert.Equal(t, []float64{0.05, 0.05, 0.05, 1}, peaks)
+	assert.Empty(t, computePeaks(&bytes.Buffer{}, 1000, 4))
+	assert.Equal(t, "1:27", formatPreviewDuration(86.72))
+	assert.Equal(t, "1:00:01", formatPreviewDuration(3600.9))
+	img := renderWaveform(peaks, 300, 100)
+	assert.Equal(t, 300, img.Bounds().Dx())
 }

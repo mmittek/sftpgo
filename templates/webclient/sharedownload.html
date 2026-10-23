@@ -15,6 +15,55 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 -->
 {{template "base" .}}
 
+{{- define "extra_head"}}
+{{- with .Preview}}
+        <meta property="og:type" content="{{if eq .Kind "video"}}video.other{{else if eq .Kind "audio"}}music.song{{else}}website{{end}}" />
+        <meta property="og:title" content="{{.Title}}" />
+        <meta property="og:description" content="{{.Description}}" />
+        <meta property="og:url" content="{{.PageURL}}" />
+        {{- if .SiteName}}
+        <meta property="og:site_name" content="{{.SiteName}}" />
+        {{- end}}
+        <meta property="og:image" content="{{.ThumbURL}}" />
+        <meta property="og:image:secure_url" content="{{.ThumbURL}}" />
+        <meta property="og:image:type" content="image/jpeg" />
+        <meta property="og:image:alt" content="{{.Title}}" />
+        {{- if .OGVideo}}
+        <meta property="og:video" content="{{.MediaURL}}" />
+        <meta property="og:video:secure_url" content="{{.MediaURL}}" />
+        <meta property="og:video:type" content="{{.MediaType}}" />
+        <meta property="og:video:width" content="{{.Width}}" />
+        <meta property="og:video:height" content="{{.Height}}" />
+        {{- end}}
+        {{- if eq .Kind "audio"}}
+        <meta property="og:audio" content="{{.MediaURL}}" />
+        <meta property="og:audio:secure_url" content="{{.MediaURL}}" />
+        <meta property="og:audio:type" content="{{.MediaType}}" />
+        {{- end}}
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="{{.Title}}" />
+        <meta name="twitter:description" content="{{.Description}}" />
+        <meta name="twitter:image" content="{{.ThumbURL}}" />
+{{- end}}
+{{- end}}
+
+{{- define "extra_css"}}
+{{- if .Preview}}
+<style {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
+    .share-preview-card { width: 100%; max-width: 900px; }
+    .share-preview-media { display: block; width: 100%; max-height: 75vh; border-radius: 0.65rem; background: #000; }
+    .share-preview-image { display: block; max-width: 100%; max-height: 75vh; margin: 0 auto; border-radius: 0.65rem; }
+    .share-preview-wave { position: relative; height: 140px; border-radius: 0.65rem; overflow: hidden; cursor: pointer;
+        background: linear-gradient(180deg, #121020 0%, #1c1430 100%); }
+    .share-preview-wave canvas { width: 100%; height: 100%; display: block; }
+    .share-preview-wave .wave-time { position: absolute; top: 8px; padding: 2px 6px; border-radius: 4px; font-size: 0.8rem;
+        color: #fff; background: rgba(0, 0, 0, 0.55); pointer-events: none; }
+    .share-preview-wave .wave-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        color: #a9a3c2; font-size: 0.95rem; }
+</style>
+{{- end}}
+{{- end}}
+
 {{- define "page_body"}}
 <div class="d-flex flex-center flex-column flex-column-fluid p-10 pb-lg-20">
     <div class="mb-12">
@@ -25,7 +74,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 		    {{.Branding.ShortName}}
         </span>
     </div>
-    <div class="card shadow-sm w-lg-600px w-md-450px">
+    <div class="card shadow-sm {{if .Preview}}share-preview-card{{else}}w-lg-600px w-md-450px{{end}}">
         <div class="card-header bg-light">
             <h3 data-i18n="fs.download_ready" class="card-title section-title">Your download is ready</h3>
             {{- if .LogoutURL}}
@@ -37,6 +86,29 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             {{- end}}
         </div>
         <div class="card-body">
+            {{- with .Preview}}
+            <div class="mb-8">
+                <div class="fs-3 fw-bold text-gray-900 text-break">{{.Title}}</div>
+                <div class="fs-6 text-gray-600 mt-1">{{.Description}}</div>
+            </div>
+            <div class="mb-8">
+                {{- if eq .Kind "video"}}
+                <video class="share-preview-media" controls preload="metadata" playsinline poster="{{.ThumbURL}}">
+                    <source src="{{.MediaURL}}" type="{{.MediaType}}">
+                </video>
+                {{- else if eq .Kind "audio"}}
+                <div id="share_wave" class="share-preview-wave mb-4" data-peaks="{{.PeaksURL}}">
+                    <canvas id="share_wave_canvas"></canvas>
+                    <div id="share_wave_loading" class="wave-loading">Drawing waveform…</div>
+                    <span id="share_wave_time" class="wave-time d-none"></span>
+                </div>
+                <audio id="share_audio" class="w-100" controls preload="metadata" src="{{.MediaURL}}"></audio>
+                <div class="fs-7 text-gray-500 mt-2">Preview is a compressed mono copy, the download is the original file.</div>
+                {{- else}}
+                <img class="share-preview-image" src="{{.MediaURL}}" alt="{{.Title}}">
+                {{- end}}
+            </div>
+            {{- end}}
             <div>
                 <a href="{{.DownloadLink}}" class="btn btn-primary btn-block">
                     <i class="ki-duotone ki-folder-down fs-2">
@@ -49,4 +121,110 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         </div>
     </div>
 </div>
+{{- end}}
+
+{{- define "extra_js"}}
+{{- if .Preview}}{{- if eq .Preview.Kind "audio"}}
+<script type="text/javascript" {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
+    (function () {
+        const wave = document.getElementById('share_wave');
+        const canvas = document.getElementById('share_wave_canvas');
+        const audio = document.getElementById('share_audio');
+        const timeLabel = document.getElementById('share_wave_time');
+        const loading = document.getElementById('share_wave_loading');
+        let peaks = [];
+        let hoverX = -1;
+
+        function fmt(t) {
+            t = Math.max(0, Math.round(t));
+            const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+            return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+        }
+
+        function draw() {
+            const dpr = window.devicePixelRatio || 1;
+            const w = Math.round(wave.clientWidth * dpr), h = Math.round(wave.clientHeight * dpr);
+            if (canvas.width !== w || canvas.height !== h) {
+                canvas.width = w;
+                canvas.height = h;
+            }
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, w, h);
+            if (!peaks.length) return;
+            const bar = 3 * dpr, gap = 1 * dpr, mid = h / 2;
+            const bars = Math.floor(w / (bar + gap));
+            const progress = audio.duration ? audio.currentTime / audio.duration : 0;
+            const played = ctx.createLinearGradient(0, 0, w, 0);
+            played.addColorStop(0, '#ec408c');
+            played.addColorStop(1, '#fab828');
+            for (let i = 0; i < bars; i++) {
+                const from = Math.floor(i * peaks.length / bars);
+                const to = Math.max(Math.floor((i + 1) * peaks.length / bars), from + 1);
+                let v = 0;
+                for (let j = from; j < to && j < peaks.length; j++) v = Math.max(v, peaks[j]);
+                const bh = Math.max(dpr, v * (mid - 6 * dpr));
+                const x = i * (bar + gap);
+                if (x / w < progress) ctx.fillStyle = played;
+                else if (hoverX >= 0 && x < hoverX) ctx.fillStyle = '#8e86ad';
+                else ctx.fillStyle = '#5b5770';
+                ctx.fillRect(x, mid - bh, bar, bh * 2);
+            }
+        }
+
+        function positionToTime(evt) {
+            const rect = wave.getBoundingClientRect();
+            return [(evt.clientX - rect.left) / rect.width, evt.clientX - rect.left];
+        }
+
+        wave.addEventListener('mousemove', function (evt) {
+            const [ratio, x] = positionToTime(evt);
+            hoverX = x * (window.devicePixelRatio || 1);
+            if (audio.duration) {
+                timeLabel.textContent = fmt(ratio * audio.duration);
+                timeLabel.style.left = Math.min(Math.max(x - 20, 4), wave.clientWidth - 60) + 'px';
+                timeLabel.classList.remove('d-none');
+            }
+            draw();
+        });
+        wave.addEventListener('mouseleave', function () {
+            hoverX = -1;
+            timeLabel.classList.add('d-none');
+            draw();
+        });
+        wave.addEventListener('click', function (evt) {
+            const [ratio] = positionToTime(evt);
+            const seek = function () {
+                audio.currentTime = ratio * audio.duration;
+                if (audio.paused) audio.play();
+            };
+            if (audio.duration) seek();
+            else audio.addEventListener('loadedmetadata', seek, { once: true });
+        });
+
+        let raf = 0;
+        function tick() {
+            draw();
+            raf = audio.paused ? 0 : requestAnimationFrame(tick);
+        }
+        audio.addEventListener('play', function () { if (!raf) raf = requestAnimationFrame(tick); });
+        ['pause', 'seeked', 'loadedmetadata', 'ended'].forEach(function (e) { audio.addEventListener(e, draw); });
+        window.addEventListener('resize', draw);
+
+        function loadPeaks(attempt) {
+            fetch(wave.dataset.peaks).then(function (resp) {
+                if (!resp.ok) throw new Error(resp.status);
+                return resp.json();
+            }).then(function (data) {
+                peaks = data;
+                loading.remove();
+                draw();
+            }).catch(function () {
+                if (attempt < 5) setTimeout(function () { loadPeaks(attempt + 1); }, 3000);
+                else loading.textContent = 'Waveform not available';
+            });
+        }
+        loadPeaks(0);
+    })();
+</script>
+{{- end}}{{- end}}
 {{- end}}

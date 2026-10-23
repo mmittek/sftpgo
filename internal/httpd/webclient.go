@@ -164,6 +164,7 @@ type shareLoginPage struct {
 type shareDownloadPage struct {
 	baseClientPage
 	DownloadLink string
+	Preview      *sharePreview
 }
 
 type shareUploadPage struct {
@@ -812,12 +813,13 @@ func (s *httpdServer) renderSharedFilesPage(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *httpdServer) renderShareDownloadPage(w http.ResponseWriter, r *http.Request, share *dataprovider.Share,
-	downloadLink string,
+	downloadLink string, connection *Connection,
 ) {
 	data := shareDownloadPage{
 		baseClientPage: s.getBaseClientPageData(util.I18nShareDownloadTitle, "", w, r),
 		DownloadLink:   downloadLink,
 	}
+	data.Preview = s.getSharePreview(r, share, connection, data.Branding.Name)
 	data.LogoutURL = ""
 	if share.Password != "" {
 		data.LogoutURL = path.Join(webClientPubSharesPath, share.ShareID, "logout")
@@ -2034,7 +2036,7 @@ func (s *httpdServer) handleClientSharedFile(w http.ResponseWriter, r *http.Requ
 	if r.URL.RawQuery != "" {
 		query = "?" + r.URL.RawQuery
 	}
-	s.renderShareDownloadPage(w, r, &share, path.Join(webClientPubSharesPath, share.ShareID)+query)
+	s.renderShareDownloadPage(w, r, &share, path.Join(webClientPubSharesPath, share.ShareID)+query, connection)
 }
 
 func (s *httpdServer) handleClientCheckExist(w http.ResponseWriter, r *http.Request) {

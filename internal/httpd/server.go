@@ -1637,6 +1637,9 @@ func (s *httpdServer) setupWebClientRoutes() {
 		s.router.Post(webClientPubSharesPath+"/{id}/{name}", s.uploadFileToShare)
 		s.router.Get(webClientPubSharesPath+"/{id}/viewpdf", s.handleShareViewPDF)
 		s.router.Get(webClientPubSharesPath+"/{id}/getpdf", s.handleShareGetPDF)
+		s.router.Get(webClientPubSharesPath+"/{id}/preview/media", s.handleShareGetPreviewMedia)
+		s.router.Get(webClientPubSharesPath+"/{id}/preview/thumb", s.handleShareGetPreviewThumb)
+		s.router.Get(webClientPubSharesPath+"/{id}/preview/peaks", s.handleShareGetPreviewPeaks)
 
 		s.router.Group(func(router chi.Router) {
 			if s.binding.OIDC.isEnabled() {
