@@ -186,7 +186,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         <span>Copy</span>
                     </button>
                 </div>
-                {{- if eq .Kind "audio"}}
+                {{- if and (eq .Kind "audio") (not .OriginalAudio)}}
                 <div class="fs-7 text-gray-500 mt-4">The player streams a 128 kbps MP3 preview. Download gets the original file.</div>
                 {{- else if eq .Kind "image"}}
                 <div class="fs-7 text-gray-500 mt-4">Showing a scaled preview. Download gets the full resolution original.</div>

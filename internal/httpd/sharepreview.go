@@ -90,10 +90,12 @@ var (
 	// EXIF orientation to ffmpeg filters, the embedded raw preview carries no orientation of its own
 	sharePreviewOrientations = map[int]string{2: "hflip", 3: "hflip,vflip", 4: "vflip", 5: "transpose=0",
 		6: "transpose=1", 7: "transpose=3", 8: "transpose=2"}
-	// content types of the original videos streamed to the page player
+	// content types of the originals streamed to the page player: videos, and mp3 files that
+	// every browser plays as they are
 	sharePreviewMediaTypes = map[string]string{
 		// Chrome refuses video/quicktime but plays H.264/HEVC .mov files announced as mp4
 		".mov": "video/mp4", ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+		".mp3": "audio/mpeg",
 	}
 	sharePreviewSuffixes = []string{sharePreviewProbeSuffix, sharePreviewThumbSuffix, sharePreviewPeaksSuffix,
 		sharePreviewAudioSuffix, sharePreviewSmallSuffix}
@@ -129,6 +131,8 @@ type sharePreview struct {
 	Width       int
 	Height      int
 	OGVideo     bool
+	// OriginalAudio: the audio player plays the original file (mp3), not a preview copy
+	OriginalAudio bool
 }
 
 type sharePreviewProbe struct {
@@ -1029,6 +1033,7 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 		}
 	case sharePreviewAudio:
 		preview.MediaType = "audio/mpeg"
+		preview.OriginalAudio = streamsOriginal(src)
 		preview.PeaksURL = urls.Peaks
 		details = append(append([]string{"Audio", formatPreviewDuration(probe.Duration)}, formatPreviewAudio(probe)...),
 			details...)
@@ -1564,10 +1569,10 @@ func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.
 func (s *httpdServer) servePreviewMedia(w http.ResponseWriter, r *http.Request, src *sharePreviewSource,
 	connection *Connection, register bool,
 ) {
-	switch src.kind {
-	case sharePreviewAudio:
+	switch {
+	case src.kind == sharePreviewAudio && !streamsOriginal(src):
 		s.serveSharePreviewAsset(w, r, src, sharePreviewAudioSuffix, "audio/mpeg", sharePreviews.genAudioPreview)
-	case sharePreviewImage:
+	case src.kind == sharePreviewImage:
 		s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
 	default:
 		if register {
@@ -1657,7 +1662,7 @@ func warmSharePreview(share dataprovider.Share) {
 		suffix string
 		gen    func(context.Context, *sharePreviewSource) error
 	}{{sharePreviewProbeSuffix, sharePreviews.genProbe}, {sharePreviewThumbSuffix, sharePreviews.genThumb}}
-	if src.kind == sharePreviewAudio {
+	if src.kind == sharePreviewAudio && !streamsOriginal(src) {
 		assets = append(assets, struct {
 			suffix string
 			gen    func(context.Context, *sharePreviewSource) error
@@ -1830,4 +1835,12 @@ func mediaCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
 	default:
 		return exec.CommandContext(ctx, name, args...)
 	}
+}
+
+// streamsOriginal: the player plays the original file, no preview copy is made (videos, mp3)
+func streamsOriginal(src *sharePreviewSource) bool {
+	if src.kind == sharePreviewVideo {
+		return true
+	}
+	return src.kind == sharePreviewAudio && strings.EqualFold(filepath.Ext(src.resolved), ".mp3")
 }

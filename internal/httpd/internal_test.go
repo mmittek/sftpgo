@@ -5362,3 +5362,12 @@ func TestScorePosterFrames(t *testing.T) {
 	assert.Greater(t, still, scorePosterFrames([][]byte{flat, flat, flat}))
 	assert.Less(t, scorePosterFrames([][]byte{black, scene, flat}), 0.0, "a cut")
 }
+
+func TestStreamsOriginal(t *testing.T) {
+	for name, expected := range map[string]bool{"/a/set.mp3": true, "/a/SET.MP3": true, "/a/set.wav": false,
+		"/a/set.aiff": false, "/a/set.flac": false} {
+		assert.Equal(t, expected, streamsOriginal(&sharePreviewSource{kind: sharePreviewAudio, resolved: name}), name)
+	}
+	assert.True(t, streamsOriginal(&sharePreviewSource{kind: sharePreviewVideo, resolved: "/a/v.mov"}))
+	assert.False(t, streamsOriginal(&sharePreviewSource{kind: sharePreviewImage, resolved: "/a/i.jpg"}))
+}
