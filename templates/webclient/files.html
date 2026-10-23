@@ -1096,15 +1096,21 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 el.off("click");
                 el.on('click', function(e){
                     let filesArray = [];
+                    let dirsArray = [];
                     dt.rows({ selected: true, search: 'applied' }).every(function (rowIdx, tableLoop, rowLoop){
                         let row = dt.row(rowIdx);
-                        filesArray.push(getNameFromMeta(row.data()['meta']));
+                        let meta = row.data()['meta'];
+                        filesArray.push(getNameFromMeta(meta));
+                        if (getTypeFromMeta(meta) == "1") {
+                            dirsArray.push(getNameFromMeta(meta));
+                        }
                     });
                     let files = encodeURIComponent(JSON.stringify(filesArray));
+                    let dirs = encodeURIComponent(JSON.stringify(dirsArray));
                     let shareURL = '{{.ShareURL}}';
                     let currentDir = '{{.CurrentDir}}';
                     let ts = new Date().getTime().toString();
-                    window.open(`${shareURL}?path=${currentDir}&files=${files}&_=${ts}`,'_blank');
+                    window.open(`${shareURL}?path=${currentDir}&files=${files}&dirs=${dirs}&_=${ts}`,'_blank');
                 });
             }
 
@@ -1748,10 +1754,12 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         let filesArray = [];
         filesArray.push(getNameFromMeta(meta));
         let files = encodeURIComponent(JSON.stringify(filesArray));
+        let dirsArray = getTypeFromMeta(meta) == "1" ? [getNameFromMeta(meta)] : [];
+        let dirs = encodeURIComponent(JSON.stringify(dirsArray));
         let shareURL = '{{.ShareURL}}';
         let currentDir = '{{.CurrentDir}}';
         let ts = new Date().getTime().toString();
-        window.open(`${shareURL}?path=${currentDir}&files=${files}&_=${ts}`,'_blank');
+        window.open(`${shareURL}?path=${currentDir}&files=${files}&dirs=${dirs}&_=${ts}`,'_blank');
     }
 
     function renameItem(meta) {

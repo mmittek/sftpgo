@@ -1471,8 +1471,38 @@ func (s *httpdServer) handleClientAddShareGet(w http.ResponseWriter, r *http.Req
 			}
 		}
 	}
+	if len(share.Paths) == 1 {
+		// dirs lists the selected names the file browser reports as folders, it is only a naming hint
+		var dirsList []string
+		if dirs := r.URL.Query().Get("dirs"); dirs != "" {
+			_ = json.Unmarshal(util.StringToBytes(dirs), &dirsList)
+		}
+		share.Name = getDefaultShareName(share.Paths[0], slices.Contains(dirsList, path.Base(share.Paths[0])),
+			user.Filters.DefaultShareNameDir)
+	}
 
 	s.renderAddUpdateSharePage(w, r, share, nil, true)
+}
+
+// getDefaultShareName returns the suggested name for a share of a single path: the file name for files,
+// the user's folder template (default "{parent} - {name}") for folders
+func getDefaultShareName(sharePath string, isDir bool, dirTemplate string) string {
+	name := path.Base(sharePath)
+	if !isDir || name == "/" {
+		return name
+	}
+	parent := path.Base(path.Dir(sharePath))
+	if parent == "/" || parent == "." {
+		return name
+	}
+	if dirTemplate == "" {
+		dirTemplate = "{parent} - {name}"
+	}
+	result := strings.NewReplacer("{parent}", parent, "{name}", name).Replace(dirTemplate)
+	if len(result) > 255 {
+		result = strings.ToValidUTF8(result[:255], "")
+	}
+	return result
 }
 
 func (s *httpdServer) handleClientUpdateShareGet(w http.ResponseWriter, r *http.Request) {

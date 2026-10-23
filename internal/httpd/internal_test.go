@@ -4868,3 +4868,13 @@ func TestTaskConnectionDisconnectAfterResponse(t *testing.T) {
 	})
 	assert.Error(t, err)
 }
+
+func TestGetDefaultShareName(t *testing.T) {
+	assert.Equal(t, "Mix Rev 1.wav", getDefaultShareName("/storagepool/Show/Band/Mix Rev 1.wav", false, ""))
+	assert.Equal(t, "Band - Mix", getDefaultShareName("/storagepool/Show/Band/Mix", true, ""))
+	assert.Equal(t, "Band-Mix", getDefaultShareName("/storagepool/Show/Band/Mix", true, "{parent}-{name}"))
+	assert.Equal(t, "Mix (Band)", getDefaultShareName("/storagepool/Show/Band/Mix", true, "{name} ({parent})"))
+	assert.Equal(t, "storagepool", getDefaultShareName("/storagepool", true, ""))
+	assert.Equal(t, "/", getDefaultShareName("/", true, ""))
+	assert.Len(t, getDefaultShareName("/"+strings.Repeat("é", 200)+"/x", true, ""), 254)
+}

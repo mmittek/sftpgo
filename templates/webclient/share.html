@@ -238,13 +238,19 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 submitButton.disabled = true;
             });
             //{{ if .IsAdd }}
+            // the server suggests a name for the path it received (folder template or file name):
+            // keep it while that path is unchanged, fall back to the last path element after edits
+            var suggestedName = document.getElementById('name').value;
+            var suggestedPath = (document.querySelector('[data-repeater-item] input[name*="path"]') || {}).value || '';
             function updateShareName() {
                 var nonEmpty = Array.from(document.querySelectorAll('[data-repeater-item] input[name*="path"]'))
                     .filter(function(i) { return i.offsetParent !== null; })
                     .map(function(i) { return i.value.trim(); })
                     .filter(Boolean);
                 var nameField = document.getElementById('name');
-                if (nonEmpty.length === 1) {
+                if (nonEmpty.length === 1 && suggestedName && nonEmpty[0] === suggestedPath.trim()) {
+                    nameField.value = suggestedName;
+                } else if (nonEmpty.length === 1) {
                     var parts = nonEmpty[0].replace(/\/+$/, '').split('/');
                     nameField.value = parts[parts.length - 1] || '';
                 } else {

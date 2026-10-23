@@ -2160,6 +2160,7 @@ func getUserFromPostFields(r *http.Request) (dataprovider.User, error) {
 			RequirePasswordChange: r.Form.Get("require_password_change") != "",
 			AdditionalEmails:      r.Form["additional_emails"],
 			DefaultSharesTokens:   defaultSharesTokens,
+			DefaultShareNameDir:   strings.TrimSpace(r.Form.Get("default_share_name_dir")),
 		},
 		VirtualFolders: getVirtualFoldersFromPostFields(r),
 		FsConfig:       fsConfig,

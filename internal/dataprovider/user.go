@@ -129,6 +129,10 @@ type UserFilters struct {
 	RequirePasswordChange bool `json:"require_password_change,omitempty"`
 	// DefaultSharesTokens defines the default max tokens for new shares created by this user (0 means unlimited).
 	DefaultSharesTokens int `json:"default_shares_tokens,omitempty"`
+	// DefaultShareNameDir is the template for the default name of a share created for a single folder.
+	// {parent} is replaced with the parent folder name and {name} with the folder name.
+	// Empty means "{parent} - {name}".
+	DefaultShareNameDir string `json:"default_share_name_dir,omitempty"`
 	// AdditionalEmails defines additional email addresses
 	AdditionalEmails []string `json:"additional_emails,omitempty"`
 	// Time-based one time passwords configuration
@@ -2056,6 +2060,7 @@ func (u *User) getACopy() User {
 	}
 	filters.RequirePasswordChange = u.Filters.RequirePasswordChange
 	filters.DefaultSharesTokens = u.Filters.DefaultSharesTokens
+	filters.DefaultShareNameDir = u.Filters.DefaultShareNameDir
 	filters.TOTPConfig.Enabled = u.Filters.TOTPConfig.Enabled
 	filters.TOTPConfig.ConfigName = u.Filters.TOTPConfig.ConfigName
 	filters.TOTPConfig.Secret = u.Filters.TOTPConfig.Secret.Clone()
