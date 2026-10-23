@@ -43,7 +43,9 @@ const (
 
 	// version of the generated assets, bump it to regenerate the cache after changing a recipe
 	sharePreviewAssetsVersion = "2"
-	sharePreviewPeaks         = 1800
+	// probe results live in their own versioned file, adding fields must not regenerate the media
+	sharePreviewProbeSuffix = ".probe-v2.json"
+	sharePreviewPeaks       = 1800
 	// sample rate of the decimated stream used to compute the waveform peaks
 	sharePreviewPeaksRate = 4000
 	// chat apps refuse to play large videos inline, above this size only the poster is advertised
@@ -93,8 +95,13 @@ type sharePreview struct {
 	Kind        string
 	Title       string
 	Description string
+	// Details are the facts behind Description, shown as chips on the page
+	Details     []string
+	FileType    string
+	Size        string
 	SiteName    string
 	PageURL     string
+	DownloadURL string
 	MediaURL    string
 	MediaType   string
 	ThumbURL    string
@@ -110,6 +117,11 @@ type sharePreviewProbe struct {
 	Width      int     `json:"width"`
 	Height     int     `json:"height"`
 	HasAudio   bool    `json:"has_audio"`
+	Channels   int     `json:"channels"`
+	SampleRate int     `json:"sample_rate"`
+	// BitDepth is set for lossless audio only, lossy codecs have no meaningful bit depth
+	BitDepth   int  `json:"bit_depth"`
+	FloatAudio bool `json:"float_audio"`
 }
 
 // sharePreviewSource is a validated single shared file that can be read locally by ffmpeg
@@ -217,7 +229,7 @@ func (c *sharePreviewCache) ensure(ctx context.Context, src *sharePreviewSource,
 		return p, nil
 	}
 	jobName := src.key + suffix
-	if src.kind == sharePreviewAudio && suffix != ".probe.json" {
+	if src.kind == sharePreviewAudio && suffix != sharePreviewProbeSuffix {
 		// one ffmpeg pass writes every audio asset
 		jobName = src.key + ".audio"
 	}
@@ -229,7 +241,7 @@ func (c *sharePreviewCache) ensure(ctx context.Context, src *sharePreviewSource,
 
 func (c *sharePreviewCache) probe(ctx context.Context, src *sharePreviewSource) (sharePreviewProbe, error) {
 	var probe sharePreviewProbe
-	p, err := c.ensure(ctx, src, ".probe.json", c.genProbe)
+	p, err := c.ensure(ctx, src, sharePreviewProbeSuffix, c.genProbe)
 	if err != nil {
 		return probe, err
 	}
@@ -245,7 +257,7 @@ func (c *sharePreviewCache) probe(ctx context.Context, src *sharePreviewSource) 
 // which could deadlock on the job slots
 func (c *sharePreviewCache) loadProbe(ctx context.Context, src *sharePreviewSource) (sharePreviewProbe, error) {
 	var probe sharePreviewProbe
-	p := c.path(src.key, ".probe.json")
+	p := c.path(src.key, sharePreviewProbeSuffix)
 	if _, err := os.Stat(p); err != nil {
 		if err := c.genProbe(ctx, src); err != nil {
 			return probe, err
@@ -267,11 +279,15 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 	}
 	var res struct {
 		Streams []struct {
-			CodecType   string `json:"codec_type"`
-			CodecName   string `json:"codec_name"`
-			Width       int    `json:"width"`
-			Height      int    `json:"height"`
-			Disposition struct {
+			CodecType     string `json:"codec_type"`
+			CodecName     string `json:"codec_name"`
+			Width         int    `json:"width"`
+			Height        int    `json:"height"`
+			Channels      int    `json:"channels"`
+			SampleRate    string `json:"sample_rate"`
+			BitsPerSample int    `json:"bits_per_sample"`
+			BitsPerRaw    string `json:"bits_per_raw_sample"`
+			Disposition   struct {
 				AttachedPic int `json:"attached_pic"`
 			} `json:"disposition"`
 		} `json:"streams"`
@@ -292,14 +308,26 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 				probe.VideoCodec, probe.Width, probe.Height = s.CodecName, s.Width, s.Height
 			}
 		case "audio":
+			if probe.HasAudio {
+				continue
+			}
 			probe.HasAudio = true
+			probe.Channels = s.Channels
+			probe.SampleRate, _ = strconv.Atoi(s.SampleRate)
+			if strings.HasPrefix(s.CodecName, "pcm_") || s.CodecName == "flac" || s.CodecName == "alac" {
+				probe.BitDepth, _ = strconv.Atoi(s.BitsPerRaw)
+				if probe.BitDepth == 0 {
+					probe.BitDepth = s.BitsPerSample
+				}
+				probe.FloatAudio = strings.HasPrefix(s.CodecName, "pcm_f")
+			}
 		}
 	}
 	data, err := json.Marshal(probe)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(c.path(src.key, ".probe.json"), data)
+	return writeFileAtomic(c.path(src.key, sharePreviewProbeSuffix), data)
 }
 
 func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSource) error {
@@ -518,6 +546,32 @@ func getRequestBaseURL(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
+// formatPreviewAudio describes the source audio, for example "Stereo · 48 kHz · 24-bit"
+func formatPreviewAudio(probe sharePreviewProbe) []string {
+	var parts []string
+	switch probe.Channels {
+	case 0:
+	case 1:
+		parts = append(parts, "Mono")
+	case 2:
+		parts = append(parts, "Stereo")
+	default:
+		parts = append(parts, fmt.Sprintf("%d channels", probe.Channels))
+	}
+	if probe.SampleRate > 0 {
+		khz := strconv.FormatFloat(float64(probe.SampleRate)/1000, 'f', -1, 64)
+		parts = append(parts, khz+" kHz")
+	}
+	if probe.BitDepth > 0 {
+		depth := fmt.Sprintf("%d-bit", probe.BitDepth)
+		if probe.FloatAudio {
+			depth += " float"
+		}
+		parts = append(parts, depth)
+	}
+	return parts
+}
+
 func formatPreviewDuration(seconds float64) string {
 	s := int(math.Round(seconds))
 	if s >= 3600 {
@@ -558,10 +612,12 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 		Title:    share.Name,
 		SiteName: siteName,
 		PageURL:  base + "/download?compress=false",
-		MediaURL: base + "/preview/media",
-		ThumbURL: base + "/preview/thumb",
-		Width:    probe.Width,
-		Height:   probe.Height,
+		// the uncompressed download of the original file, what the Download button points to
+		DownloadURL: base + "?compress=false",
+		MediaURL:    base + "/preview/media",
+		ThumbURL:    base + "/preview/thumb",
+		Width:       probe.Width,
+		Height:      probe.Height,
 	}
 	if preview.Title == "" {
 		preview.Title = path.Base(src.name)
@@ -573,13 +629,18 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	case sharePreviewAudio:
 		preview.MediaType = "audio/mpeg"
 		preview.PeaksURL = base + "/preview/peaks"
-		details = append([]string{"Audio", formatPreviewDuration(probe.Duration)}, details...)
+		details = append(append([]string{"Audio", formatPreviewDuration(probe.Duration)}, formatPreviewAudio(probe)...),
+			details...)
 		preview.Width, preview.Height = 1200, 630
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewVideoTypes[strings.ToLower(path.Ext(src.name))]
 		preview.OGVideo = probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize
-		details = append([]string{"Video", formatPreviewDuration(probe.Duration)}, details...)
+		details = append([]string{"Video", formatPreviewDuration(probe.Duration),
+			fmt.Sprintf("%dx%d", probe.Width, probe.Height)}, details...)
 	}
+	preview.Details = details[1:] // the page shows the kind as the file type chip instead
+	preview.FileType = strings.ToUpper(strings.TrimPrefix(path.Ext(src.name), "."))
+	preview.Size = util.ByteCountIEC(src.info.Size())
 	preview.Description = strings.Join(details, " · ")
 	return preview
 }
