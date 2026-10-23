@@ -1,11 +1,13 @@
 // Share previews (fork addition): media players, thumbnails and Open Graph metadata for
-// single-file read shares. Previews are generated with ffmpeg into a size-capped cache and
-// do not count as share uses. The feature is enabled by setting SHARE_PREVIEWS_DIR.
+// single-file read shares. Previews are generated with ffmpeg into a ".cache" folder next to
+// the shared file, regenerated when missing or when the source changes, and they never block
+// the download. Preview requests do not count as share uses. Enabled with SHARE_PREVIEWS=true.
 
 package httpd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -15,7 +17,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
+	_ "image/png" // branding logo
 	"io"
 	"math"
 	"net/http"
@@ -23,7 +27,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,11 +44,14 @@ const (
 	sharePreviewAudio = "audio"
 	sharePreviewVideo = "video"
 
-	// version of the generated assets, bump it to regenerate the cache after changing a recipe
-	sharePreviewAssetsVersion = "2"
-	// probe results live in their own versioned file, adding fields must not regenerate the media
-	sharePreviewProbeSuffix = ".probe-v2.json"
-	sharePreviewPeaks       = 1800
+	// version of the generated assets, bump it to regenerate every preview after changing a recipe
+	sharePreviewAssetsVersion = "3"
+	sharePreviewCacheDir      = ".cache"
+	sharePreviewProbeSuffix   = ".probe.json"
+	sharePreviewThumbSuffix   = ".thumb.jpg"
+	sharePreviewPeaksSuffix   = ".peaks.json"
+	sharePreviewAudioSuffix   = ".preview.mp3"
+	sharePreviewPeaks         = 1800
 	// sample rate of the decimated stream used to compute the waveform peaks
 	sharePreviewPeaksRate = 4000
 	// chat apps refuse to play large videos inline, above this size only the poster is advertised
@@ -62,31 +68,23 @@ var (
 		".mov": sharePreviewVideo, ".mp4": sharePreviewVideo, ".m4v": sharePreviewVideo,
 		".webm": sharePreviewVideo,
 	}
-	sharePreviewVideoTypes = map[string]string{
+	// content types of the original videos streamed to the page player
+	sharePreviewMediaTypes = map[string]string{
 		// Chrome refuses video/quicktime but plays H.264/HEVC .mov files announced as mp4
 		".mov": "video/mp4", ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
 	}
+	sharePreviewSuffixes = []string{sharePreviewProbeSuffix, sharePreviewThumbSuffix, sharePreviewPeaksSuffix,
+		sharePreviewAudioSuffix}
 	sharePreviews *sharePreviewCache
 )
 
 func init() {
-	dir := os.Getenv("SHARE_PREVIEWS_DIR")
-	if dir == "" {
+	if enabled, _ := strconv.ParseBool(os.Getenv("SHARE_PREVIEWS")); !enabled {
 		return
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		logger.WarnToConsole("share previews disabled, unable to create %q: %v", dir, err)
-		return
-	}
-	maxSize := int64(4096)
-	if v, err := strconv.ParseInt(os.Getenv("SHARE_PREVIEWS_MAX_SIZE_MB"), 10, 64); err == nil && v > 0 {
-		maxSize = v
 	}
 	sharePreviews = &sharePreviewCache{
-		dir:     dir,
-		maxSize: maxSize * 1024 * 1024,
-		sem:     make(chan struct{}, 2),
-		jobs:    make(map[string]*sharePreviewJob),
+		sem:  make(chan struct{}, 2),
+		jobs: make(map[string]*sharePreviewJob),
 	}
 }
 
@@ -122,6 +120,10 @@ type sharePreviewProbe struct {
 	// BitDepth is set for lossless audio only, lossy codecs have no meaningful bit depth
 	BitDepth   int  `json:"bit_depth"`
 	FloatAudio bool `json:"float_audio"`
+	// the source this probe and the other cached assets were made from
+	SourceSize  int64  `json:"source_size"`
+	SourceMtime int64  `json:"source_mtime"`
+	Version     string `json:"version"`
 }
 
 // sharePreviewSource is a validated single shared file that can be read locally by ffmpeg
@@ -139,15 +141,31 @@ type sharePreviewJob struct {
 }
 
 type sharePreviewCache struct {
-	dir     string
-	maxSize int64
-	sem     chan struct{}
-	mu      sync.Mutex
-	jobs    map[string]*sharePreviewJob
+	sem  chan struct{}
+	mu   sync.Mutex
+	jobs map[string]*sharePreviewJob
 }
 
-func (c *sharePreviewCache) path(key, suffix string) string {
-	return filepath.Join(c.dir, key+suffix)
+// path returns where an asset of the shared file lives: <dir>/.cache/<file name><suffix>
+func (c *sharePreviewCache) path(src *sharePreviewSource, suffix string) string {
+	return filepath.Join(filepath.Dir(src.resolved), sharePreviewCacheDir, filepath.Base(src.resolved)+suffix)
+}
+
+// dropStale removes the assets made from an older version of the source file, the next
+// requests regenerate them
+func (c *sharePreviewCache) dropStale(src *sharePreviewSource) {
+	data, err := os.ReadFile(c.path(src, sharePreviewProbeSuffix))
+	if err != nil {
+		return
+	}
+	var probe sharePreviewProbe
+	if json.Unmarshal(data, &probe) == nil && probe.SourceSize == src.info.Size() &&
+		probe.SourceMtime == src.info.ModTime().UnixNano() && probe.Version == sharePreviewAssetsVersion {
+		return
+	}
+	for _, suffix := range sharePreviewSuffixes {
+		_ = os.Remove(c.path(src, suffix))
+	}
 }
 
 // run executes fn once per name while concurrent callers wait for the same result
@@ -169,9 +187,6 @@ func (c *sharePreviewCache) run(ctx context.Context, name string, fn func(contex
 			delete(c.jobs, name)
 			c.mu.Unlock()
 			close(job.done)
-			if job.err == nil {
-				c.prune()
-			}
 		}()
 	}
 	c.mu.Unlock()
@@ -183,50 +198,16 @@ func (c *sharePreviewCache) run(ctx context.Context, name string, fn func(contex
 	}
 }
 
-// prune removes the least recently used assets above the size cap
-func (c *sharePreviewCache) prune() {
-	entries, err := os.ReadDir(c.dir)
-	if err != nil {
-		return
-	}
-	type cached struct {
-		path  string
-		size  int64
-		mtime time.Time
-	}
-	var files []cached
-	var total int64
-	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		files = append(files, cached{filepath.Join(c.dir, e.Name()), info.Size(), info.ModTime()})
-		total += info.Size()
-	}
-	if total <= c.maxSize {
-		return
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mtime.Before(files[j].mtime) })
-	for _, f := range files {
-		if total <= c.maxSize {
-			break
-		}
-		if os.Remove(f.path) == nil {
-			total -= f.size
-		}
-	}
-}
-
 // ensure returns the path of a cached asset, generating it if missing
 func (c *sharePreviewCache) ensure(ctx context.Context, src *sharePreviewSource, suffix string,
 	gen func(ctx context.Context, src *sharePreviewSource) error,
 ) (string, error) {
-	p := c.path(src.key, suffix)
+	p := c.path(src, suffix)
 	if _, err := os.Stat(p); err == nil {
-		now := time.Now()
-		_ = os.Chtimes(p, now, now) // keep recently used assets out of the pruning
 		return p, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o775); err != nil {
+		return "", err
 	}
 	jobName := src.key + suffix
 	if src.kind == sharePreviewAudio && suffix != sharePreviewProbeSuffix {
@@ -257,7 +238,7 @@ func (c *sharePreviewCache) probe(ctx context.Context, src *sharePreviewSource) 
 // which could deadlock on the job slots
 func (c *sharePreviewCache) loadProbe(ctx context.Context, src *sharePreviewSource) (sharePreviewProbe, error) {
 	var probe sharePreviewProbe
-	p := c.path(src.key, sharePreviewProbeSuffix)
+	p := c.path(src, sharePreviewProbeSuffix)
 	if _, err := os.Stat(p); err != nil {
 		if err := c.genProbe(ctx, src); err != nil {
 			return probe, err
@@ -273,7 +254,7 @@ func (c *sharePreviewCache) loadProbe(ctx context.Context, src *sharePreviewSour
 
 func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSource) error {
 	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-print_format", "json",
-		"-show_streams", "-show_format", src.resolved).Output()
+		"-show_streams", "-show_format", "file:"+src.resolved).Output()
 	if err != nil {
 		return fmt.Errorf("ffprobe: %w", err)
 	}
@@ -323,11 +304,13 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 			}
 		}
 	}
+	probe.SourceSize, probe.SourceMtime = src.info.Size(), src.info.ModTime().UnixNano()
+	probe.Version = sharePreviewAssetsVersion
 	data, err := json.Marshal(probe)
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(c.path(src.key, sharePreviewProbeSuffix), data)
+	return writeFileAtomic(c.path(src, sharePreviewProbeSuffix), data)
 }
 
 func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSource) error {
@@ -337,6 +320,10 @@ func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSourc
 	}
 	args := []string{"-v", "error", "-y"}
 	box := "1600"
+	if src.kind == sharePreviewImage {
+		// a "%" in the file name must not be read as an image sequence pattern
+		args = append(args, "-pattern_type", "none")
+	}
 	if src.kind == sharePreviewVideo {
 		probe, err := c.loadProbe(ctx, src)
 		if err != nil {
@@ -345,19 +332,19 @@ func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSourc
 		box = "1280"
 		args = append(args, "-ss", fmt.Sprintf("%.2f", math.Min(probe.Duration*0.1, 30)))
 	}
-	tmp := c.path(src.key, ".thumb.tmp.jpg")
-	args = append(args, "-i", src.resolved, "-frames:v", "1", "-vf",
+	tmp := c.path(src, ".thumb.tmp.jpg")
+	args = append(args, "-i", "file:"+src.resolved, "-frames:v", "1", "-vf",
 		fmt.Sprintf("scale=w='min(%[1]s,iw)':h='min(%[1]s,ih)':force_original_aspect_ratio=decrease,format=yuvj420p", box),
-		"-q:v", "3", tmp)
+		"-q:v", "3", "-update", "1", "file:"+tmp)
 	if out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("ffmpeg thumbnail: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return os.Rename(tmp, c.path(src.key, ".thumb.jpg"))
+	return os.Rename(tmp, c.path(src, sharePreviewThumbSuffix))
 }
 
-// genAudio makes, in one decoding pass, the light mp3 the page plays, the waveform peaks and
-// the waveform image used as thumbnail
+// genAudio makes, in one decoding pass, the 128 kbps mp3 the page plays, the waveform peaks
+// and the waveform image used as thumbnail
 func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSource) error {
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
@@ -366,9 +353,11 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 	if !probe.HasAudio || probe.Duration <= 0 {
 		return errors.New("no audio stream")
 	}
-	tmpMedia := c.path(src.key, ".media.tmp.mp3")
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-i", src.resolved,
-		"-map", "0:a:0", "-ac", "1", "-ar", "22050", "-c:a", "libmp3lame", "-b:a", "64k", tmpMedia,
+	tmpMedia := c.path(src, ".preview.tmp.mp3")
+	// mp3 carries at most two channels, mono sources stay mono
+	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
+		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", "file:"+tmpMedia,
 		"-map", "0:a:0", "-ac", "1", "-ar", strconv.Itoa(sharePreviewPeaksRate), "-f", "s16le", "pipe:1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -388,10 +377,10 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(c.path(src.key, ".peaks.json"), data); err != nil {
+	if err := writeFileAtomic(c.path(src, sharePreviewPeaksSuffix), data); err != nil {
 		return err
 	}
-	tmpThumb := c.path(src.key, ".thumb.tmp.jpg")
+	tmpThumb := c.path(src, ".thumb.tmp.jpg")
 	f, err := os.Create(tmpThumb)
 	if err != nil {
 		return err
@@ -404,10 +393,10 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 		os.Remove(tmpThumb)
 		return err
 	}
-	if err := os.Rename(tmpThumb, c.path(src.key, ".thumb.jpg")); err != nil {
+	if err := os.Rename(tmpThumb, c.path(src, sharePreviewThumbSuffix)); err != nil {
 		return err
 	}
-	return os.Rename(tmpMedia, c.path(src.key, ".media.mp3"))
+	return os.Rename(tmpMedia, c.path(src, sharePreviewAudioSuffix))
 }
 
 // computePeaks reads mono s16le samples and returns the normalized loudness (RMS) of each
@@ -529,13 +518,15 @@ func getSharePreviewSource(share *dataprovider.Share, connection *Connection) (*
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%s", resolved, info.Size(), info.ModTime().UnixNano(),
 		sharePreviewAssetsVersion)))
-	return &sharePreviewSource{
+	src := &sharePreviewSource{
 		kind:     kind,
 		name:     name,
 		resolved: resolved,
 		info:     info,
 		key:      hex.EncodeToString(sum[:16]),
-	}, nil
+	}
+	sharePreviews.dropStale(src)
+	return src, nil
 }
 
 func getRequestBaseURL(r *http.Request) string {
@@ -601,7 +592,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 		return nil
 	}
 	go func() {
-		_, err := sharePreviews.ensure(context.Background(), src, ".thumb.jpg", sharePreviews.genThumb)
+		_, err := sharePreviews.ensure(context.Background(), src, sharePreviewThumbSuffix, sharePreviews.genThumb)
 		if err != nil {
 			logger.Warn(logSender, "", "unable to generate share preview for %q: %v", src.name, err)
 		}
@@ -634,7 +625,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 			details...)
 		preview.Width, preview.Height = 1200, 630
 	case sharePreviewVideo:
-		preview.MediaType = sharePreviewVideoTypes[strings.ToLower(path.Ext(src.name))]
+		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
 		preview.OGVideo = probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize
 		details = append([]string{"Video", formatPreviewDuration(probe.Duration),
 			fmt.Sprintf("%dx%d", probe.Width, probe.Height)}, details...)
@@ -694,7 +685,96 @@ func (s *httpdServer) handleShareGetPreviewThumb(w http.ResponseWriter, r *http.
 		return
 	}
 	defer connection.CloseFS()
-	s.serveSharePreviewAsset(w, r, src, ".thumb.jpg", "image/jpeg", sharePreviews.genThumb)
+	if src.kind == sharePreviewAudio {
+		s.serveBrandedWaveform(w, r, src)
+		return
+	}
+	s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
+}
+
+// serveBrandedWaveform stamps the current branding logo on the cached waveform at request
+// time, so a branding change shows up in the link previews without regenerating anything
+func (s *httpdServer) serveBrandedWaveform(w http.ResponseWriter, r *http.Request, src *sharePreviewSource) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	p, err := sharePreviews.ensure(ctx, src, sharePreviewThumbSuffix, sharePreviews.genThumb)
+	if err != nil {
+		logger.Warn(logSender, "", "unable to generate the waveform for %q: %v", src.name, err)
+		sendAPIResponse(w, r, err, "Preview not available", http.StatusServiceUnavailable)
+		return
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		sendAPIResponse(w, r, err, "", http.StatusInternalServerError)
+		return
+	}
+	waveform, err := jpeg.Decode(f)
+	f.Close()
+	if err != nil {
+		sendAPIResponse(w, r, err, "", http.StatusInternalServerError)
+		return
+	}
+	img := image.NewRGBA(waveform.Bounds())
+	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
+	modTime := src.info.ModTime()
+	if configs, err := dataprovider.GetConfigs(); err == nil && configs.Branding != nil &&
+		len(configs.Branding.WebClient.Logo) > 0 {
+		if logo, _, err := image.Decode(bytes.NewReader(configs.Branding.WebClient.Logo)); err == nil {
+			stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
+			if updated := util.GetTimeFromMsecSinceEpoch(configs.UpdatedAt); updated.After(modTime) {
+				modTime = updated
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 88}); err != nil {
+		sendAPIResponse(w, r, err, "", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// revalidate every time, the logo may change while the waveform stays the same
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeContent(w, r, "", modTime, bytes.NewReader(buf.Bytes()))
+}
+
+// stampLogo draws the logo in white in the bottom-right corner. The logo darkness becomes the
+// opacity, so a black logo on a white square and a transparent one both come out as clean
+// white marks on the dark waveform
+func stampLogo(dst *image.RGBA, logo image.Image, height, margin int) {
+	lb := logo.Bounds()
+	if lb.Dx() == 0 || lb.Dy() == 0 || height <= 0 {
+		return
+	}
+	width := lb.Dx() * height / lb.Dy()
+	x0 := dst.Bounds().Max.X - margin - width
+	y0 := dst.Bounds().Max.Y - margin - height
+	for ty := 0; ty < height; ty++ {
+		sy0, sy1 := lb.Min.Y+ty*lb.Dy()/height, lb.Min.Y+max((ty+1)*lb.Dy()/height, ty*lb.Dy()/height+1)
+		for tx := 0; tx < width; tx++ {
+			sx0, sx1 := lb.Min.X+tx*lb.Dx()/width, lb.Min.X+max((tx+1)*lb.Dx()/width, tx*lb.Dx()/width+1)
+			// average the source pixels behind this target pixel
+			var alpha float64
+			n := 0
+			for sy := sy0; sy < sy1; sy++ {
+				for sx := sx0; sx < sx1; sx++ {
+					r, g, b, a := logo.At(sx, sy).RGBA()
+					if a == 0 {
+						n++
+						continue
+					}
+					// RGBA is alpha premultiplied, un-premultiply before reading the darkness
+					lum := (0.299*float64(r) + 0.587*float64(g) + 0.114*float64(b)) / float64(a)
+					alpha += (1 - lum) * float64(a) / 0xffff
+					n++
+				}
+			}
+			alpha = alpha / float64(n) * 0.9
+			px := dst.RGBAAt(x0+tx, y0+ty)
+			blend := func(v uint8) uint8 { return uint8(float64(v)*(1-alpha) + 255*alpha) }
+			dst.SetRGBA(x0+tx, y0+ty, color.RGBA{blend(px.R), blend(px.G), blend(px.B), 255})
+		}
+	}
 }
 
 func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.Request) {
@@ -707,12 +787,12 @@ func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.
 		sendAPIResponse(w, r, nil, "Peaks are only available for audio", http.StatusNotFound)
 		return
 	}
-	s.serveSharePreviewAsset(w, r, src, ".peaks.json", "application/json", sharePreviews.genAudio)
+	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genAudio)
 }
 
-// handleShareGetPreviewMedia serves what the page player loads: the light mp3 for audio,
-// the original file for video and the scaled image for images. It does not count as a
-// share use, since players issue many range requests while seeking
+// handleShareGetPreviewMedia serves what the page player loads: the 128 kbps mp3 for audio,
+// the original file for video and the scaled image for images. It does not count as a share use, since players
+// issue many range requests while seeking
 func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.Request) {
 	src, _, connection, ok := s.getSharePreviewForRequest(w, r)
 	if !ok {
@@ -721,9 +801,9 @@ func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.
 	defer connection.CloseFS()
 	switch src.kind {
 	case sharePreviewAudio:
-		s.serveSharePreviewAsset(w, r, src, ".media.mp3", "audio/mpeg", sharePreviews.genAudio)
+		s.serveSharePreviewAsset(w, r, src, sharePreviewAudioSuffix, "audio/mpeg", sharePreviews.genAudio)
 	case sharePreviewImage:
-		s.serveSharePreviewAsset(w, r, src, ".thumb.jpg", "image/jpeg", sharePreviews.genThumb)
+		s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
 	default:
 		if err := common.Connections.Add(connection); err != nil {
 			sendAPIResponse(w, r, err, "Unable to add connection", http.StatusTooManyRequests)
@@ -771,7 +851,7 @@ func serveInlineMedia(w http.ResponseWriter, r *http.Request, connection *Connec
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+size-1, info.Size()))
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-	w.Header().Set("Content-Type", sharePreviewVideoTypes[strings.ToLower(path.Ext(src.name))])
+	w.Header().Set("Content-Type", sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))])
 	w.Header().Set("Content-Disposition", "inline")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Accept-Ranges", "bytes")
