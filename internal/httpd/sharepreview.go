@@ -20,7 +20,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/jpeg"
-	_ "image/png" // branding logo
+	"image/png" // also decodes the branding logo
 	"io"
 	"math"
 	"net/http"
@@ -829,9 +829,35 @@ func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePrevi
 	rate := strconv.Itoa(int(videoRate))
 	box := strconv.Itoa(videoPreviewBox)
 	tmpVideo := c.path(src, ".card.tmp.mp4")
+	// labels: the file name on top, PREVIEW at the bottom left
+	outWidth, _ := fitInBox(probe.Width, probe.Height, videoPreviewBox)
+	const labelMargin, labelSize = 16, 16
+	labels := []string{c.path(src, ".card-title.tmp.png"), c.path(src, ".card-mark.tmp.png")}
+	for idx, text := range []string{path.Base(src.name), "PREVIEW"} {
+		img := renderTextLabel(text, labelSize, idx == 0, outWidth-2*labelMargin)
+		if img == nil {
+			return errors.New("unable to load the label font")
+		}
+		defer os.Remove(labels[idx])
+		f, err := os.Create(labels[idx])
+		if err != nil {
+			return err
+		}
+		err = png.Encode(f, img)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return err
+		}
+	}
+	margin := strconv.Itoa(labelMargin)
+	filter := "[0:v:0]scale='if(gt(iw,ih),min(" + box + ",iw),-2)':'if(gt(iw,ih),-2,min(" + box + ",ih))'[v0];" +
+		"[v0][1:v]overlay=" + margin + ":" + margin + "[v1];" +
+		"[v1][2:v]overlay=" + margin + ":main_h-overlay_h-" + margin + ",format=yuv420p[v]"
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
-		"-map", "0:v:0", "-map", "0:a:0?", "-t", strconv.FormatFloat(limit, 'f', 3, 64),
-		"-vf", "scale='if(gt(iw,ih),min("+box+",iw),-2)':'if(gt(iw,ih),-2,min("+box+",ih))',format=yuv420p",
+		"-i", "file:"+labels[0], "-i", "file:"+labels[1], "-filter_complex", filter,
+		"-map", "[v]", "-map", "0:a:0?", "-t", strconv.FormatFloat(limit, 'f', 3, 64),
 		"-c:v", "libx264", "-preset", "ultrafast", "-b:v", rate, "-maxrate", rate,
 		"-bufsize", strconv.Itoa(int(videoRate*2)), "-c:a", "aac", "-b:a", "128k", "-ac", "2",
 		"-dn", "-write_tmcd", "0", "-map_metadata", "-1",

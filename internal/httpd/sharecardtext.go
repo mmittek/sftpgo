@@ -64,3 +64,38 @@ func drawCardText(dst *image.RGBA, text string, size float64, bold bool, x, base
 	d.Dot = fixed.P(x, baseline)
 	d.DrawString(text)
 }
+
+// renderTextLabel draws text in white with a dark shadow on a transparent picture just large
+// enough for it, cut with "..." to fit maxWidth: labels laid over video previews
+func renderTextLabel(text string, size float64, bold bool, maxWidth int) *image.RGBA {
+	face := cardFace(size, bold)
+	if face == nil {
+		return nil
+	}
+	defer face.Close()
+	shadow := int(size / 8)
+	d := &font.Drawer{Face: face}
+	limit := fixed.I(maxWidth - shadow)
+	if d.MeasureString(text) > limit {
+		runes := []rune(text)
+		for len(runes) > 0 && d.MeasureString(string(runes)+"...") > limit {
+			runes = runes[:len(runes)-1]
+		}
+		text = string(runes) + "..."
+	}
+	metrics := face.Metrics()
+	width := d.MeasureString(text).Ceil() + shadow
+	height := (metrics.Ascent + metrics.Descent).Ceil() + shadow
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	baseline := metrics.Ascent.Ceil()
+	for _, layer := range []struct {
+		offset int
+		c      color.RGBA
+	}{{shadow, color.RGBA{0, 0, 0, 200}}, {0, color.RGBA{0xf4, 0xf1, 0xff, 255}}} {
+		d.Dst = img
+		d.Src = image.NewUniform(layer.c)
+		d.Dot = fixed.P(layer.offset, baseline+layer.offset)
+		d.DrawString(text)
+	}
+	return img
+}
