@@ -1159,7 +1159,7 @@ func (s *httpdServer) serveSharePicture(w http.ResponseWriter, r *http.Request, 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 	if _, err := sharePreviews.ensure(ctx, src, sharePreviewThumbSuffix, sharePreviews.genThumb); err != nil {
-		serveShareCard(w, r, src.kind)
+		s.serveShareCard(w, r, src.kind)
 		return
 	}
 	if src.kind == sharePreviewAudio {
@@ -1169,22 +1169,45 @@ func (s *httpdServer) serveSharePicture(w http.ResponseWriter, r *http.Request, 
 	s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
 }
 
-// currentBrandingLogo is the web client logo set in the branding configuration, nil if none
-func currentBrandingLogo() (image.Image, time.Time) {
-	configs, err := dataprovider.GetConfigs()
-	if err != nil || configs.Branding == nil || len(configs.Branding.WebClient.Logo) == 0 {
-		return nil, time.Time{}
+// brandingLogo is the logo the web client pages show, resolved the same way they resolve it:
+// the logo of the branding settings (database), else the logo_path of the configuration, else
+// the default one. Read at every use, so a branding change applies at once. nil when the logo
+// cannot be decoded (for example an SVG)
+func (s *httpdServer) brandingLogo() (image.Image, time.Time) {
+	branding := s.binding.webClientBranding()
+	if branding.LogoPath == path.Join("/", "branding", "webclient", "logo.png") {
+		if data := dbBrandingConfig.getWebClientLogo(); len(data) > 0 {
+			logo, _, err := image.Decode(bytes.NewReader(data))
+			if err != nil {
+				return nil, time.Time{}
+			}
+			var updated time.Time
+			if configs, err := dataprovider.GetConfigs(); err == nil {
+				updated = util.GetTimeFromMsecSinceEpoch(configs.UpdatedAt)
+			}
+			return logo, updated
+		}
 	}
-	logo, _, err := image.Decode(bytes.NewReader(configs.Branding.WebClient.Logo))
+	file := filepath.Join(s.staticFilesPath, filepath.FromSlash(strings.TrimPrefix(branding.LogoPath, "/")))
+	f, err := os.Open(file)
 	if err != nil {
 		return nil, time.Time{}
 	}
-	return logo, util.GetTimeFromMsecSinceEpoch(configs.UpdatedAt)
+	defer f.Close()
+	logo, _, err := image.Decode(f)
+	if err != nil {
+		return nil, time.Time{}
+	}
+	var updated time.Time
+	if info, err := f.Stat(); err == nil {
+		updated = info.ModTime()
+	}
+	return logo, updated
 }
 
 // serveShareCard answers with the placeholder link preview, never cached by browsers
-func serveShareCard(w http.ResponseWriter, r *http.Request, kind string) {
-	logo, _ := currentBrandingLogo()
+func (s *httpdServer) serveShareCard(w http.ResponseWriter, r *http.Request, kind string) {
+	logo, _ := s.brandingLogo()
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, renderShareCard(kind, logo), &jpeg.Options{Quality: 88}); err != nil {
 		sendAPIResponse(w, r, err, "", http.StatusInternalServerError)
@@ -1443,7 +1466,7 @@ func (s *httpdServer) serveBrandedWaveform(w http.ResponseWriter, r *http.Reques
 	img := image.NewRGBA(waveform.Bounds())
 	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
 	modTime := src.info.ModTime()
-	if logo, updated := currentBrandingLogo(); logo != nil {
+	if logo, updated := s.brandingLogo(); logo != nil {
 		stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
 		if updated.After(modTime) {
 			modTime = updated

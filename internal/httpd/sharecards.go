@@ -93,5 +93,5 @@ func (s *httpdServer) handleSharePreviewCard(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	connection.CloseFS()
-	serveShareCard(w, r, "folder")
+	s.serveShareCard(w, r, "folder")
 }
