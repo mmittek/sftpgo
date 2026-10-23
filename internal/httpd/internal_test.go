@@ -27,6 +27,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -4890,7 +4891,10 @@ func TestSharePreviewPeaksAndDuration(t *testing.T) {
 		_ = binary.Write(&buf, binary.LittleEndian, v)
 	}
 	peaks := computePeaks(&buf, 1000, 4)
-	assert.Equal(t, []float64{0.05, 0.05, 0.05, 1}, peaks)
+	// 249 samples at 100 and one at -2000 in the last bucket
+	loud := math.Sqrt((249*100*100 + 2000*2000) / 250.0)
+	assert.Equal(t, []float64{math.Round(100/loud*1000) / 1000, math.Round(100/loud*1000) / 1000,
+		math.Round(100/loud*1000) / 1000, 1}, peaks)
 	assert.Empty(t, computePeaks(&bytes.Buffer{}, 1000, 4))
 	assert.Equal(t, "1:27", formatPreviewDuration(86.72))
 	assert.Equal(t, "1:00:01", formatPreviewDuration(3600.9))

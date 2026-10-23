@@ -42,7 +42,7 @@ const (
 	sharePreviewVideo = "video"
 
 	// version of the generated assets, bump it to regenerate the cache after changing a recipe
-	sharePreviewAssetsVersion = "1"
+	sharePreviewAssetsVersion = "2"
 	sharePreviewPeaks         = 1800
 	// sample rate of the decimated stream used to compute the waveform peaks
 	sharePreviewPeaksRate = 4000
@@ -382,7 +382,9 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 	return os.Rename(tmpMedia, c.path(src.key, ".media.mp3"))
 }
 
-// computePeaks reads mono s16le samples and returns the normalized peak of each bucket
+// computePeaks reads mono s16le samples and returns the normalized loudness (RMS) of each
+// bucket: on mastered material the plain peak is near full scale everywhere and the
+// waveform turns into a block that hides the song structure
 func computePeaks(r io.Reader, expectedSamples float64, buckets int) []float64 {
 	perBucket := int(math.Ceil(expectedSamples / float64(buckets)))
 	if perBucket < 1 {
@@ -396,20 +398,20 @@ func computePeaks(r io.Reader, expectedSamples float64, buckets int) []float64 {
 		if _, err := io.ReadFull(r, buf); err != nil {
 			break
 		}
-		v := math.Abs(float64(int16(binary.LittleEndian.Uint16(buf))))
-		if v > current {
-			current = v
-		}
+		v := float64(int16(binary.LittleEndian.Uint16(buf)))
+		current += v * v
 		count++
 		if count == perBucket {
-			peaks = append(peaks, current)
-			maxPeak = math.Max(maxPeak, current)
+			rms := math.Sqrt(current / float64(count))
+			peaks = append(peaks, rms)
+			maxPeak = math.Max(maxPeak, rms)
 			current, count = 0, 0
 		}
 	}
 	if count > 0 {
-		peaks = append(peaks, current)
-		maxPeak = math.Max(maxPeak, current)
+		rms := math.Sqrt(current / float64(count))
+		peaks = append(peaks, rms)
+		maxPeak = math.Max(maxPeak, rms)
 	}
 	_, _ = io.Copy(io.Discard, r) // let ffmpeg finish writing if the duration was underestimated
 	for i := range peaks {
