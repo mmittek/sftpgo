@@ -133,8 +133,11 @@ type sharePreview struct {
 	// audio the waveform card video
 	VideoURL  string
 	VideoType string
-	ThumbURL  string
-	PeaksURL  string
+	// the size of the og:video, the copy is smaller than the original
+	VideoWidth  int
+	VideoHeight int
+	ThumbURL    string
+	PeaksURL    string
 	// the size of the thumbnail, link previews show the picture on first share when they know it
 	ThumbWidth  int
 	ThumbHeight int
@@ -724,7 +727,7 @@ func (c *sharePreviewCache) genWaveform(ctx context.Context, src *sharePreviewSo
 	return os.Rename(tmpThumb, c.path(src, sharePreviewThumbSuffix))
 }
 
-// genAudioPreview encodes the 128 kbps mp3 the page plays, stereo when the source is
+// genAudioPreview encodes the 96 kbps mp3 the page plays, stereo when the source is
 func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePreviewSource) error {
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
@@ -737,7 +740,7 @@ func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePrevi
 	// mp3 carries at most two channels, mono sources stay mono
 	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
-		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", "file:"+tmpMedia).CombinedOutput()
+		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "96k", "file:"+tmpMedia).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpMedia)
 		return fmt.Errorf("ffmpeg audio preview: %w: %s", err, strings.TrimSpace(string(out)))
@@ -831,6 +834,7 @@ func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePrevi
 		"-vf", "scale='if(gt(iw,ih),min("+box+",iw),-2)':'if(gt(iw,ih),-2,min("+box+",ih))',format=yuv420p",
 		"-c:v", "libx264", "-preset", "ultrafast", "-b:v", rate, "-maxrate", rate,
 		"-bufsize", strconv.Itoa(int(videoRate*2)), "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+		"-dn", "-write_tmcd", "0", "-map_metadata", "-1",
 		"-fs", cardVideoHardLimit, "-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpVideo)
@@ -852,7 +856,7 @@ func stampWaveformText(img *image.RGBA, src *sharePreviewSource, probe sharePrev
 }
 
 // genCardVideo renders the audio as a small mp4, the branded waveform as a still picture at one
-// frame per second over 128 kbps AAC, so chats that play only videos inline (Discord) can
+// frame per second over 64 kbps AAC, so chats that play only videos inline (Discord) can
 // play the share in the link card. About 1 MB per minute
 func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewSource) error {
 	if src.kind == sharePreviewVideo {
@@ -920,17 +924,20 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
 	rate := strconv.Itoa(fps)
 	// the still picture costs little, the audio bitrate drops for long sets to stay in budget
-	audioRate := min(128_000, float64(cardVideoBudget)/duration-40_000)
+	// 64 kbps is plenty for a preview, shared audio adds up fast
+	audioRate := min(64_000, float64(cardVideoBudget)/duration-16_000)
 	limit := duration
-	if audioRate < 48_000 {
-		audioRate = 48_000
-		limit = cardVideoBudget / (48_000 + 40_000)
+	if audioRate < 32_000 {
+		audioRate = 32_000
+		limit = cardVideoBudget / (32_000 + 16_000)
 	}
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y",
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[0],
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[1],
 		"-i", "file:"+src.resolved, "-filter_complex", filter, "-map", "[v]", "-map", "2:a:0",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-r", rate, "-g", strconv.Itoa(10*fps),
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "30", "-r", rate,
+		// keyframes are most of the size of a still picture: one a minute
+		"-g", strconv.Itoa(60*fps),
 		"-c:a", "aac", "-b:a", strconv.Itoa(int(audioRate)), "-ac", channels, "-shortest",
 		"-t", strconv.FormatFloat(limit, 'f', 3, 64), "-fs", cardVideoHardLimit,
 		"-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
@@ -1278,6 +1285,7 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 			// too large or a codec chat apps do not play: the small H.264 copy
 			preview.OGVideo = true
 			preview.VideoURL, preview.VideoType = cardVideoURL(src, urls.Video), "video/mp4"
+			preview.VideoWidth, preview.VideoHeight = fitInBox(probe.Width, probe.Height, videoPreviewBox)
 		case urls.Video != "":
 			queueCardVideo(src)
 		}
@@ -1814,7 +1822,7 @@ func (s *httpdServer) handleShareGetPreviewVideo(w http.ResponseWriter, r *http.
 	s.serveSharePreviewAsset(w, r, src, sharePreviewCardVideoSuffix, "video/mp4", sharePreviews.genCardVideo)
 }
 
-// handleShareGetPreviewMedia serves what the page player loads: the 128 kbps mp3 for audio,
+// handleShareGetPreviewMedia serves what the page player loads: the 96 kbps mp3 for audio,
 // the original file for video and the scaled image for images. It does not count as a share use, since players
 // issue many range requests while seeking
 func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.Request) {
@@ -1827,7 +1835,7 @@ func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.
 	s.servePreviewMedia(w, r, src, connection, true)
 }
 
-// servePreviewMedia serves what the page player loads: the 128 kbps mp3 for audio, the original
+// servePreviewMedia serves what the page player loads: the 96 kbps mp3 for audio, the original
 // file for video and the scaled image for images. Share connections are registered here, the
 // logged-in ones already are
 func (s *httpdServer) servePreviewMedia(w http.ResponseWriter, r *http.Request, src *sharePreviewSource,

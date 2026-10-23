@@ -36,8 +36,8 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         <meta property="og:video" content="{{.VideoURL}}" />
         <meta property="og:video:secure_url" content="{{.VideoURL}}" />
         <meta property="og:video:type" content="{{.VideoType}}" />
-        <meta property="og:video:width" content="{{.Width}}" />
-        <meta property="og:video:height" content="{{.Height}}" />
+        <meta property="og:video:width" content="{{if .VideoWidth}}{{.VideoWidth}}{{else}}{{.Width}}{{end}}" />
+        <meta property="og:video:height" content="{{if .VideoHeight}}{{.VideoHeight}}{{else}}{{.Height}}{{end}}" />
         {{- end}}
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:title" content="{{.Title}}" />
@@ -182,7 +182,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     </button>
                 </div>
                 {{- if and (eq .Kind "audio") (not .OriginalAudio)}}
-                <div class="fs-7 text-gray-500 mt-4">The player streams a 128 kbps MP3 preview. Download gets the original file.</div>
+                <div class="fs-7 text-gray-500 mt-4">The player streams a 96 kbps MP3 preview. Download gets the original file.</div>
                 {{- else if eq .Kind "image"}}
                 <div class="fs-7 text-gray-500 mt-4">Showing a scaled preview. Download gets the full resolution original.</div>
                 {{- end}}
