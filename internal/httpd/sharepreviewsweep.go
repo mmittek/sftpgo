@@ -165,5 +165,8 @@ func splitPreviewAssetName(name string) (source, suffix string, temp bool) {
 	if strings.HasSuffix(name, ".preview.tmp.mp3") {
 		return strings.TrimSuffix(name, ".preview.tmp.mp3"), sharePreviewAudioSuffix, true
 	}
+	if strings.HasSuffix(name, ".card.tmp.mp4") {
+		return strings.TrimSuffix(name, ".card.tmp.mp4"), sharePreviewCardVideoSuffix, true
+	}
 	return "", "", false
 }

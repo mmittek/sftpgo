@@ -57,6 +57,8 @@ const (
 	sharePreviewThumbSuffix   = ".thumb.jpg"
 	sharePreviewPeaksSuffix   = ".peaks.json"
 	sharePreviewAudioSuffix   = ".preview.mp3"
+	// audio as a video, the branded waveform over the sound, for chats that only play videos inline
+	sharePreviewCardVideoSuffix = ".card.mp4"
 	// tiny thumbnail for file lists
 	sharePreviewSmallSuffix = ".thumb-sm.jpg"
 	sharePreviewSmallBox    = 256
@@ -98,8 +100,10 @@ var (
 		".mp3": "audio/mpeg",
 	}
 	sharePreviewSuffixes = []string{sharePreviewProbeSuffix, sharePreviewThumbSuffix, sharePreviewPeaksSuffix,
-		sharePreviewAudioSuffix, sharePreviewSmallSuffix}
+		sharePreviewAudioSuffix, sharePreviewSmallSuffix, sharePreviewCardVideoSuffix}
 	sharePreviews *sharePreviewCache
+	// shareCardLogo returns the current branding logo, set by the server that serves shares
+	shareCardLogo func() (image.Image, time.Time)
 )
 
 func init() {
@@ -123,8 +127,12 @@ type sharePreview struct {
 	DownloadURL string
 	MediaURL    string
 	MediaType   string
-	ThumbURL    string
-	PeaksURL    string
+	// VideoURL and VideoType are the og:video of link previews: the original video, or for
+	// audio the waveform card video
+	VideoURL  string
+	VideoType string
+	ThumbURL  string
+	PeaksURL  string
 	// the size of the thumbnail, link previews show the picture on first share when they know it
 	ThumbWidth  int
 	ThumbHeight int
@@ -236,6 +244,8 @@ func previewJobName(src *sharePreviewSource, suffix string) string {
 			return src.key + ".waveform"
 		case sharePreviewAudioSuffix:
 			return src.key + ".mp3"
+		case sharePreviewCardVideoSuffix:
+			return src.key + ".video"
 		}
 	}
 	return src.key + suffix
@@ -733,6 +743,83 @@ func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePrevi
 	return os.Rename(tmpMedia, c.path(src, sharePreviewAudioSuffix))
 }
 
+// cardVideoReady: the card video exists and is newer than the branding logo it shows, an older
+// one is removed so the next share warm-up or fetch renders it again
+func cardVideoReady(src *sharePreviewSource) bool {
+	p := sharePreviews.path(src, sharePreviewCardVideoSuffix)
+	info, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	if shareCardLogo != nil {
+		if logo, updated := shareCardLogo(); logo != nil && updated.After(info.ModTime()) {
+			_ = os.Remove(p)
+			return false
+		}
+	}
+	return true
+}
+
+// genCardVideo renders the audio as a small mp4, the branded waveform as a still picture at one
+// frame per second over 128 kbps AAC, so chats that play only videos inline (Discord) can
+// play the share in the link card. About 1 MB per minute
+func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewSource) error {
+	probe, err := c.loadProbe(ctx, src)
+	if err != nil {
+		return err
+	}
+	if !probe.HasAudio {
+		return errors.New("no audio stream")
+	}
+	thumb := c.path(src, sharePreviewThumbSuffix)
+	if _, err := os.Stat(thumb); err != nil {
+		// the job holds the file, so the waveform is made here instead of in a job of its own
+		if err := c.genWaveform(ctx, src); err != nil {
+			return err
+		}
+	}
+	f, err := os.Open(thumb)
+	if err != nil {
+		return err
+	}
+	waveform, err := jpeg.Decode(f)
+	f.Close()
+	if err != nil {
+		return err
+	}
+	img := image.NewRGBA(waveform.Bounds())
+	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
+	if shareCardLogo != nil {
+		if logo, _ := shareCardLogo(); logo != nil {
+			stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
+		}
+	}
+	still := c.path(src, ".card.tmp.jpg")
+	tmpVideo := c.path(src, ".card.tmp.mp4")
+	defer os.Remove(still)
+	sf, err := os.Create(still)
+	if err != nil {
+		return err
+	}
+	err = jpeg.Encode(sf, img, &jpeg.Options{Quality: 90})
+	if closeErr := sf.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
+	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "1", "-i", "file:"+still,
+		"-i", "file:"+src.resolved, "-map", "0:v", "-map", "1:a:0", "-c:v", "libx264", "-preset", "veryfast",
+		"-tune", "stillimage", "-pix_fmt", "yuv420p", "-r", "1", "-g", "10", "-c:a", "aac", "-b:a", "128k",
+		"-ac", channels, "-shortest", "-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
+	if err != nil {
+		os.Remove(tmpVideo)
+		return fmt.Errorf("ffmpeg card video: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return os.Rename(tmpVideo, c.path(src, sharePreviewCardVideoSuffix))
+}
+
 // computePeaks reads mono s16le samples and returns the normalized loudness (RMS) of each
 // bucket: on mastered material the plain peak is near full scale everywhere and the
 // waveform turns into a block that hides the song structure
@@ -973,6 +1060,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 		Media:    base + "/preview/media",
 		Thumb:    base + "/preview/thumb",
 		Peaks:    base + "/preview/peaks",
+		Video:    base + "/preview/video",
 	})
 }
 
@@ -984,6 +1072,8 @@ type previewURLs struct {
 	Media    string
 	Thumb    string
 	Peaks    string
+	// Video is the waveform card video of audio files, only for shares
+	Video string
 }
 
 // buildPreview probes a file and returns its preview page data, starting the thumbnail in the
@@ -1038,9 +1128,15 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 		details = append(append([]string{"Audio", formatPreviewDuration(probe.Duration)}, formatPreviewAudio(probe)...),
 			details...)
 		preview.Width, preview.Height = 1200, 630
+		// advertised once rendered: a link preview that finds no video keeps the plain card
+		if urls.Video != "" && cardVideoReady(src) {
+			preview.OGVideo = true
+			preview.VideoURL, preview.VideoType = urls.Video, "video/mp4"
+		}
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
 		preview.OGVideo = probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize
+		preview.VideoURL, preview.VideoType = urls.Media, preview.MediaType
 		videoDetails := []string{"Video", formatPreviewDuration(probe.Duration), fmt.Sprintf("%dx%d", probe.Width, probe.Height)}
 		if fps := formatFrameRate(probe.FrameRate); fps != "" {
 			videoDetails = append(videoDetails, fps)
@@ -1550,6 +1646,23 @@ func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.
 	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genWaveform)
 }
 
+// handleShareGetPreviewVideo serves the waveform card video of audio shares, the og:video of
+// link previews. Not a share use, like the other preview assets
+func (s *httpdServer) handleShareGetPreviewVideo(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(withTaskPriority(r.Context(), priorityShare))
+	src, _, connection, ok := s.getSharePreviewForRequest(w, r)
+	if !ok {
+		return
+	}
+	defer connection.CloseFS()
+	if src.kind != sharePreviewAudio {
+		sendAPIResponse(w, r, nil, "The card video is only available for audio", http.StatusNotFound)
+		return
+	}
+	cardVideoReady(src) // drops a video showing an old logo
+	s.serveSharePreviewAsset(w, r, src, sharePreviewCardVideoSuffix, "video/mp4", sharePreviews.genCardVideo)
+}
+
 // handleShareGetPreviewMedia serves what the page player loads: the 128 kbps mp3 for audio,
 // the original file for video and the scaled image for images. It does not count as a share use, since players
 // issue many range requests while seeking
@@ -1667,6 +1780,12 @@ func warmSharePreview(share dataprovider.Share) {
 			suffix string
 			gen    func(context.Context, *sharePreviewSource) error
 		}{sharePreviewAudioSuffix, sharePreviews.genAudioPreview})
+	}
+	if src.kind == sharePreviewAudio && !cardVideoReady(src) {
+		assets = append(assets, struct {
+			suffix string
+			gen    func(context.Context, *sharePreviewSource) error
+		}{sharePreviewCardVideoSuffix, sharePreviews.genCardVideo})
 	}
 	for _, asset := range assets {
 		p := sharePreviews.path(src, asset.suffix)
