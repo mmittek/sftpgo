@@ -24,6 +24,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -54,11 +55,16 @@ const (
 	sharePreviewThumbSuffix  = ".thumb.jpg"
 	sharePreviewPeaksSuffix  = ".peaks.json"
 	sharePreviewAudioSuffix  = ".preview.mp3"
-	sharePreviewPeaks        = 1800
+	// tiny thumbnail for file lists
+	sharePreviewSmallSuffix = ".thumb-sm.jpg"
+	sharePreviewSmallBox    = 256
+	sharePreviewPeaks       = 1800
 	// sample rate of the decimated stream used to compute the waveform peaks
 	sharePreviewPeaksRate = 4000
 	// chat apps refuse to play large videos inline, above this size only the poster is advertised
 	sharePreviewOGVideoMaxSize = 100 * 1024 * 1024
+	// tiny thumbnails in the logged-in file list
+	webClientPreviewThumbPath = "/web/client/preview/thumb"
 )
 
 var (
@@ -85,7 +91,7 @@ var (
 		".mov": "video/mp4", ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
 	}
 	sharePreviewSuffixes = []string{sharePreviewProbeSuffix, sharePreviewThumbSuffix, sharePreviewPeaksSuffix,
-		sharePreviewAudioSuffix}
+		sharePreviewAudioSuffix, sharePreviewSmallSuffix}
 	sharePreviews *sharePreviewCache
 )
 
@@ -558,11 +564,30 @@ func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSourc
 		// the waveform image comes out of the audio pass together with the peaks
 		return c.genAudio(ctx, src)
 	}
+	box := 1600
+	if src.kind == sharePreviewVideo {
+		box = 1280
+	}
+	return c.renderStill(ctx, src, scaleFilter(box), sharePreviewThumbSuffix)
+}
+
+// genSmallThumb makes the tiny thumbnail of file lists straight from the source, so a folder
+// view does not also produce the large page previews. It is a square center crop, so lists
+// line up whatever the image proportions
+func (c *sharePreviewCache) genSmallThumb(ctx context.Context, src *sharePreviewSource) error {
+	if src.kind == sharePreviewAudio {
+		return errors.New("audio files have no list thumbnail")
+	}
+	return c.renderStill(ctx, src, squareCropFilter(sharePreviewSmallBox), sharePreviewSmallSuffix)
+}
+
+// renderStill writes a JPEG of the image itself, of the embedded rendering of a camera raw
+// file or of a video frame at 10% of the duration, through the given scale filter
+func (c *sharePreviewCache) renderStill(ctx context.Context, src *sharePreviewSource, filter, suffix string) error {
 	if sharePreviewRawExts[strings.ToLower(filepath.Ext(src.resolved))] {
-		return c.genRawThumb(ctx, src)
+		return c.genRawThumb(ctx, src, filter, suffix)
 	}
 	args := []string{"-v", "error", "-y"}
-	box := "1600"
 	if src.kind == sharePreviewImage {
 		// a "%" in the file name must not be read as an image sequence pattern
 		args = append(args, "-pattern_type", "none")
@@ -572,23 +597,31 @@ func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSourc
 		if err != nil {
 			return err
 		}
-		box = "1280"
 		args = append(args, "-ss", fmt.Sprintf("%.2f", math.Min(probe.Duration*0.1, 30)))
 	}
-	tmp := c.path(src, ".thumb.tmp.jpg")
-	args = append(args, "-i", "file:"+src.resolved, "-frames:v", "1", "-vf",
-		fmt.Sprintf("scale=w='min(%[1]s,iw)':h='min(%[1]s,ih)':force_original_aspect_ratio=decrease,format=yuvj420p", box),
+	tmp := c.path(src, suffix+".tmp.jpg")
+	args = append(args, "-i", "file:"+src.resolved, "-frames:v", "1", "-vf", filter,
 		"-q:v", "3", "-update", "1", "file:"+tmp)
 	if out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("ffmpeg thumbnail: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return os.Rename(tmp, c.path(src, sharePreviewThumbSuffix))
+	return os.Rename(tmp, c.path(src, suffix))
+}
+
+// scaleFilter fits the picture in box x box, keeping its proportions
+func scaleFilter(box int) string {
+	return fmt.Sprintf("scale=w='min(%[1]d,iw)':h='min(%[1]d,ih)':force_original_aspect_ratio=decrease,format=yuvj420p", box)
+}
+
+// squareCropFilter fills box x box and crops the center
+func squareCropFilter(box int) string {
+	return fmt.Sprintf("scale=%[1]d:%[1]d:force_original_aspect_ratio=increase,crop=%[1]d:%[1]d,format=yuvj420p", box)
 }
 
 // genRawThumb scales the JPEG rendering embedded in a camera raw file, it is what the camera
 // or the raw converter developed (edits included), decoding the sensor data would not be
-func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSource) error {
+func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSource, filter, suffix string) error {
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
 		return err
@@ -604,11 +637,11 @@ func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSo
 	if embedded == nil {
 		return errors.New("no embedded preview in the raw file")
 	}
-	filters := "scale=w='min(1600,iw)':h='min(1600,ih)':force_original_aspect_ratio=decrease,format=yuvj420p"
+	filters := filter
 	if rotate, ok := sharePreviewOrientations[probe.Orientation]; ok {
 		filters = rotate + "," + filters
 	}
-	tmp := c.path(src, ".thumb.tmp.jpg")
+	tmp := c.path(src, suffix+".tmp.jpg")
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-f", "jpeg_pipe", "-i", "pipe:0",
 		"-frames:v", "1", "-vf", filters, "-q:v", "3", "-update", "1", "file:"+tmp)
 	cmd.Stdin = bytes.NewReader(embedded)
@@ -616,7 +649,7 @@ func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSo
 		os.Remove(tmp)
 		return fmt.Errorf("ffmpeg raw preview: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return os.Rename(tmp, c.path(src, sharePreviewThumbSuffix))
+	return os.Rename(tmp, c.path(src, suffix))
 }
 
 // genAudio makes, in one decoding pass, the 128 kbps mp3 the page plays, the waveform peaks
@@ -763,10 +796,33 @@ func writeFileAtomic(name string, data []byte) error {
 
 // getSharePreviewSource validates a single-file share for previews, nil means no preview
 func getSharePreviewSource(share *dataprovider.Share, connection *Connection) (*sharePreviewSource, error) {
-	if sharePreviews == nil || len(share.Paths) != 1 {
+	if len(share.Paths) != 1 {
 		return nil, nil
 	}
-	name := share.Paths[0]
+	return getPreviewSource(connection, share.Paths[0])
+}
+
+// hasListThumb tells the file lists which entries get a tiny thumbnail: images and videos.
+// Audio would need a full decode for its waveform, too slow for a folder of stems
+func hasListThumb(name string) bool {
+	if sharePreviews == nil {
+		return false
+	}
+	kind := sharePreviewExts[strings.ToLower(path.Ext(name))]
+	return kind == sharePreviewImage || kind == sharePreviewVideo
+}
+
+// getListThumbURL versions the URL with the file modification time, so browsers keep the
+// thumbnail until the file changes
+func getListThumbURL(baseWebPath, dir string, info os.FileInfo) string {
+	return fmt.Sprintf("%s?path=%s&v=%d", baseWebPath, url.QueryEscape(path.Join(dir, info.Name())), info.ModTime().Unix())
+}
+
+// getPreviewSource validates a file the connection may read for previews, nil means no preview
+func getPreviewSource(connection *Connection, name string) (*sharePreviewSource, error) {
+	if sharePreviews == nil {
+		return nil, nil
+	}
 	kind, ok := sharePreviewExts[strings.ToLower(path.Ext(name))]
 	if !ok {
 		return nil, nil
@@ -957,7 +1013,18 @@ func (s *httpdServer) getSharePreviewForRequest(w http.ResponseWriter, r *http.R
 	if err != nil {
 		return nil, nil, nil, false
 	}
-	src, err := getSharePreviewSource(&share, connection)
+	var src *sharePreviewSource
+	if r.URL.Query().Has("path") {
+		// a file inside a folder share, for the thumbnails of its file list
+		if err = validateBrowsableShare(share, connection); err == nil {
+			var name string
+			if name, err = getBrowsableSharedPath(share.Paths[0], r); err == nil {
+				src, err = getPreviewSource(connection, name)
+			}
+		}
+	} else {
+		src, err = getSharePreviewSource(&share, connection)
+	}
 	if err != nil || src == nil {
 		connection.CloseFS()
 		if err == nil {
@@ -988,7 +1055,7 @@ func (s *httpdServer) serveSharePreviewAsset(w http.ResponseWriter, r *http.Requ
 	defer f.Close()
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeContent(w, r, "", src.info.ModTime(), f)
 }
 
@@ -998,11 +1065,42 @@ func (s *httpdServer) handleShareGetPreviewThumb(w http.ResponseWriter, r *http.
 		return
 	}
 	defer connection.CloseFS()
+	if r.URL.Query().Get("size") == "small" {
+		s.serveListThumb(w, r, src)
+		return
+	}
 	if src.kind == sharePreviewAudio {
 		s.serveBrandedWaveform(w, r, src)
 		return
 	}
 	s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
+}
+
+func (s *httpdServer) serveListThumb(w http.ResponseWriter, r *http.Request, src *sharePreviewSource) {
+	if src.kind == sharePreviewAudio {
+		sendAPIResponse(w, r, nil, "Audio files have no list thumbnail", http.StatusNotFound)
+		return
+	}
+	s.serveSharePreviewAsset(w, r, src, sharePreviewSmallSuffix, "image/jpeg", sharePreviews.genSmallThumb)
+}
+
+// handleClientGetPreviewThumb serves the tiny thumbnail of a file in the logged-in file list
+func (s *httpdServer) handleClientGetPreviewThumb(w http.ResponseWriter, r *http.Request) {
+	connection, err := getUserConnection(w, r)
+	if err != nil {
+		return
+	}
+	defer common.Connections.Remove(connection.GetID())
+	name := connection.User.GetCleanedPath(r.URL.Query().Get("path"))
+	src, err := getPreviewSource(connection, name)
+	if err != nil || src == nil {
+		if err == nil {
+			err = util.NewRecordNotFoundError("no thumbnail for this file")
+		}
+		sendAPIResponse(w, r, err, "", getRespStatus(err))
+		return
+	}
+	s.serveListThumb(w, r, src)
 }
 
 // serveBrandedWaveform stamps the current branding logo on the cached waveform at request

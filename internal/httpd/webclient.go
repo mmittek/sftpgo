@@ -1064,6 +1064,10 @@ func (s *httpdServer) handleShareGetDirContents(w http.ResponseWriter, r *http.R
 			res["name"] = info.Name()
 			res["url"] = getFileObjectURL(share.GetRelativePath(name), info.Name(),
 				path.Join(webClientPubSharesPath, share.ShareID, "browse"))
+			if info.Mode().IsRegular() && hasListThumb(info.Name()) {
+				res["thumb_url"] = getListThumbURL(path.Join(webClientPubSharesPath, share.ShareID, "preview", "thumb"),
+					share.GetRelativePath(name), info) + "&size=small"
+			}
 			res["last_modified"] = getFileObjectModTime(info.ModTime())
 			results = append(results, res)
 		}
@@ -1284,6 +1288,9 @@ func (s *httpdServer) handleClientGetDirContents(w http.ResponseWriter, r *http.
 						res["edit_url"] = strings.Replace(res["url"].(string), webClientFilesPath, webClientEditFilePath, 1)
 					}
 				}
+			}
+			if info.Mode().IsRegular() && hasListThumb(info.Name()) {
+				res["thumb_url"] = getListThumbURL(webClientPreviewThumbPath, name, info)
 			}
 			res["meta"] = fmt.Sprintf("%v_%v", res["type"], info.Name())
 			res["name"] = info.Name()

@@ -202,6 +202,15 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 {{- define "extra_css"}}
 <link href="{{.StaticURL}}/assets/plugins/custom/datatables/datatables.bundle.css" rel="stylesheet" type="text/css"/>
 <link href="{{.StaticURL}}/vendor/imageviewer/imageviewer.css" rel="stylesheet" type="text/css"/>
+<style {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
+    /* list thumbnails: the file icon stays until the thumbnail has loaded */
+    .file-thumb-box { position: relative; width: 40px; height: 40px; flex-shrink: 0; display: flex;
+        align-items: center; justify-content: center; }
+    .file-thumb-box img { position: absolute; inset: 0; width: 40px; height: 40px; object-fit: cover;
+        border-radius: 6px; opacity: 0; transition: opacity 0.15s; }
+    .file-thumb-box.thumb-loaded img { opacity: 1; }
+    .file-thumb-box.thumb-loaded i { visibility: hidden; }
+</style>
 {{- end}}
 
 {{- define "extra_js"}}
@@ -628,6 +637,20 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                     icon_name = "ki-file-right"
                                 }
 
+                                if (row["thumb_url"]) {
+                                    // the icon shows until the thumbnail has loaded, and stays if it cannot be made
+                                    return `<div class="d-flex align-items-center">
+                                            <span class="file-thumb-box me-4">
+                                                <i class="ki-duotone ${icon_name} fs-2x text-primary">
+                                                    <i class="path1"></i>
+                                                    <i class="path2"></i>
+                                                </i>
+                                                <img src="${row['thumb_url']}" alt="" loading="lazy" decoding="async"
+                                                    onload="this.parentNode.classList.add('thumb-loaded')" onerror="this.remove()">
+                                            </span>
+                                            <a href="${row['url']}" class="text-gray-800 text-hover-primary">${data}</a>
+                                        </div>`
+                                }
                                 return `<div class="d-flex align-items-center">
                                             <i class="ki-duotone ${icon_name} fs-2x text-primary me-4">
                                                 <i class="path1"></i>
