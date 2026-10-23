@@ -798,11 +798,11 @@ const (
 	cardVideoHardLimit  = "95M"
 	videoPreviewMaxRate = 2_500_000
 	videoPreviewMinRate = 400_000
-	videoPreviewBox     = 960
+	videoPreviewBox     = 720
 )
 
 // genVideoPreview renders the card video of a video that chat apps cannot play as it is (not
-// H.264 or above 100 MB): H.264 with the long side at most 960 pixels, 128 kbps AAC, with the
+// H.264 or above 100 MB): H.264 with the long side at most 720 pixels, never cropped, 128 kbps AAC, with the
 // bitrate chosen to stay under the size budget. The fastest encoder preset, quality comes
 // second. Videos too long for the lowest bitrate are cut
 func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePreviewSource) error {
