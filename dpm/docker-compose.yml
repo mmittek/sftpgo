@@ -1,5 +1,8 @@
+# Fixed names, so the stack does not depend on the folder name
+name: dpm
 services:
   sftpgo:
+    image: sftpgo-dpm:latest
     build:
       context: ..
       dockerfile: Dockerfile

@@ -11,11 +11,12 @@
 # Run daily from cron. Exit 0 = nothing to do or renewed OK.
 set -u
 
-COMPOSE_DIR=/home/dpm/sftpgo/rack
+# the deployment folder (dpm/) is the parent of this script's folder
+COMPOSE_DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 RENEW_DAYS=21
 
 cd "$COMPOSE_DIR" || exit 1
-# ACME_DOMAIN, ACME_EMAIL, DATA_PATH
+# ACME_DOMAIN, ACME_EMAIL, DATA_PATH, SFTPGO_UID, SFTPGO_GID
 set -a; . ./.env; set +a
 
 CERT="$DATA_PATH/certs/$ACME_DOMAIN.crt"
@@ -44,13 +45,13 @@ echo "$(ts) cert $ACME_DOMAIN expires within $RENEW_DAYS days; built-in HTTP-01 
 
 docker compose stop sftpgo || { echo "$(ts) ERROR: failed to stop sftpgo" >&2; exit 1; }
 
-docker run --rm --user 1000:1000 -p 443:443 \
+docker run --rm --user "$SFTPGO_UID:$SFTPGO_GID" -p 443:443 \
     -v "$DATA_PATH":/var/lib/sftpgo \
     -e SFTPGO_ACME__DOMAINS="$ACME_DOMAIN" \
     -e SFTPGO_ACME__EMAIL="$ACME_EMAIL" \
     -e SFTPGO_ACME__HTTP01_CHALLENGE__PORT=0 \
     -e SFTPGO_ACME__TLS_ALPN01_CHALLENGE__PORT=443 \
-    rack-sftpgo sftpgo acme run
+    --entrypoint sftpgo sftpgo-dpm:latest acme run
 rc=$?
 
 # Always restart the server, even if renewal failed.

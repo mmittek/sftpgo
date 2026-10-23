@@ -16,33 +16,36 @@ A fork of [drakkan/sftpgo](https://github.com/drakkan/sftpgo) that runs the DPM 
 
 The share page (`/web/client/pubshares/<id>/download`) of a single video, audio or image file shows a player and the file details (`internal/httpd/sharepreview.go`, `templates/webclient/sharedownload.html`).
 
-- **Video:** the browser's native player streams the original file, with range requests for seeking and no autoplay. Details: container, duration, dimensions, codec, bit rate, size.
+- **Video:** the browser's native player streams the original file, with range requests for seeking and no autoplay. Details: container, duration, dimensions, frame rate, codec, bit rate, camera and lens (from the Sony XML sidecar, the DJI encoder tag or QuickTime make and model tags), the source (camera original, DaVinci Resolve render, ffmpeg output) and size.
 - **Audio:** a waveform you can click to seek, drawn from per-bucket loudness (RMS), over the browser's audio player. The player streams a 128 kbps MP3 preview (stereo when the source is stereo); Download gets the original. Details: format, duration, channels, sample rate, bit depth (lossless sources), size.
-- **Image:** a scaled preview up to 1600 px; Download gets the full-resolution original.
+- **Image:** a scaled preview up to 1600 px; Download gets the full-resolution original. Camera raw files (DNG, ARW, CR2, CR3, NEF, RAF, ORF, RW2) are shown from the JPEG rendering embedded in the file, rotated by its orientation tag. Details: dimensions, camera (in capitals) and lens when the file carries them, size.
 - **Layout:** the file name and a Download button with the file size in the header, the preview on a dark stage, details as chips, and the direct download link in a read-only field with a Copy button.
 - **Link previews in chat apps:** the page carries Open Graph and Twitter tags (title, details, thumbnail), so Discord, iMessage, Slack and others unfold a pasted link into a card. Playable video is advertised only for H.264 files up to 100 MB.
 - **Branding:** the audio waveform card and the waveform on the page show the current branding logo in the bottom-right corner, applied at request time, so a logo change in the admin branding settings takes effect at once.
 - **Generated files** live in a `.cache` folder next to the shared file (`<file name>.probe.json`, `.thumb.jpg`, `.peaks.json`, `.preview.mp3`). They are created with ffmpeg on first view, regenerated when missing or when the source file changes, and never block the download.
 - **Share uses:** preview requests honor expiry, passwords and permissions but do not count as share uses, since a player sends many range requests while seeking.
-- Enabled with `SHARE_PREVIEWS=true`. ffmpeg is installed in the Docker image.
+- Enabled with `SHARE_PREVIEWS=true`. ffmpeg and exiftool are installed in the Docker image.
 
 ### Web client and API
 
 - **No deletions over HTTP.** Every file and folder DELETE route of the REST API and the web client returns 403, and the Delete actions are removed from the web client file browser. SFTP deletions and share uploads are unaffected.
 - **Admin user page.** The fork-only user settings live on the user page only (not in the template block shared with the group page).
 
-### Deployment (`rack/`)
+### Deployment (`dpm/`)
 
-- `rack/docker-compose.yml` builds the image from this repository, with every host-specific value in `rack/.env` (see `rack/.env.example`): ACME domain and email, the VPN address the admin UI binds to, host paths and the run-as user.
+Everything needed to deploy lives in `dpm/`, documented in [dpm/README.md](dpm/README.md). Host-specific values and secrets stay in `dpm/.env`, which git ignores; `dpm/.env.example` lists every setting.
+
+- `dpm/docker-compose.yml` builds the image (`sftpgo-dpm:latest`) from this repository.
+- `dpm/deploy.sh` backs up the database, keeps the running image for rollback, builds, tests the schema migration on a copy of the database, restarts and runs health checks. `--rollback` goes back, optionally restoring a database backup.
 - The admin UI (port 8081) listens only on the VPN address; the HTTPS binding on 443 serves the web client only. Port 80 is published for ACME certificate renewal.
-- `rack/scripts/apply-extensions.py` pushes `rack/allowed-extensions.conf` to all users through the REST API; `rack/scripts/renew-cert-fallback.sh` is a fallback certificate renewal.
+- `dpm/scripts/renew-cert-fallback.sh` renews the certificate over TLS-ALPN-01 when the built-in renewal fails; `dpm/scripts/apply-extensions.py` pushes `dpm/allowed-extensions.conf` to all users.
 
 ### Keeping up with upstream
 
 - Rebase only the fork commits onto upstream `main`: `git rebase --onto upstream/main <old merge-base>`. A plain `git rebase <tag>` replays upstream development commits.
 - Track upstream `main`, not release tags: this deployment's database schema is already newer than the latest release (schema 36 versus 33 for v2.7.6), and releases refuse to open it.
-- Before deploying, test schema migrations on a copy of the database with `sftpgo initprovider` in a throwaway container, back up the database, and keep the previous image tagged for rollback.
-- Fork code lives in its own files where possible (`sharepreview.go`, `sharehidden.go`) to keep rebases clean. Unit tests for the fork features are in `internal/httpd/internal_test.go` (`TestGetDefaultShareName`, `TestSharePreviewPeaksAndDuration`, `TestHideDotEntriesInShares`).
+- Deploy with `dpm/deploy.sh`: it tests schema migrations on a copy of the database, backs it up and keeps the previous image for rollback.
+- Fork code lives in its own files where possible (`sharepreview.go`, `sharehidden.go`) to keep rebases clean. Unit tests for the fork features are in `internal/httpd/internal_test.go` (`TestGetDefaultShareName`, `TestSharePreview*`, `TestHideDotEntriesInShares`).
 
 ---
 
