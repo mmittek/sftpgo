@@ -50,6 +50,15 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     <span data-i18n="fs.new_folder">New Folder</span>
                 </button>
                 {{- end}}
+                {{- if .ShareFolderZipURL}}
+                <a href="{{.ShareFolderZipURL}}" class="btn btn-flex btn-light-primary me-3">
+                    <i class="ki-duotone ki-folder-down fs-2">
+                        <span class="path1"></span>
+                        <span class="path2"></span>
+                    </i>
+                    <span>Download this folder (.zip)</span>
+                </a>
+                {{- end}}
                 {{- if .ShareZipURL}}
                 <a href="{{.ShareZipURL}}" class="btn btn-flex btn-primary{{if .CanAddFiles}} me-3{{end}}">
                     <i class="ki-duotone ki-folder-down fs-2">
@@ -99,19 +108,28 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
     <div class="card-body">
         {{- if .ShareZipURL}}
         <div class="mb-8">
+            {{- if .ShareFolderZipURL}}
+            <label for="share_folder_zip_url" class="form-label fs-7 fw-semibold text-gray-600 mb-2">Download link for this folder (.zip)</label>
+            <div class="input-group mb-4">
+                <input id="share_folder_zip_url" type="text" class="form-control form-control-solid fs-7 share-copy-input" value="{{.ShareFolderZipURL}}" readonly>
+                <button type="button" class="btn btn-light-primary fw-semibold share-copy-button">
+                    <i class="ki-outline ki-copy fs-3"></i>
+                    <span>Copy</span>
+                </button>
+            </div>
+            {{- end}}
             <label for="share_zip_url" class="form-label fs-7 fw-semibold text-gray-600 mb-2">Download link for the whole folder (.zip)</label>
             <div class="input-group">
-                <input id="share_zip_url" type="text" class="form-control form-control-solid fs-7" value="{{.ShareZipURL}}" readonly>
-                <button id="share_zip_copy" type="button" class="btn btn-light-primary fw-semibold">
+                <input id="share_zip_url" type="text" class="form-control form-control-solid fs-7 share-copy-input" value="{{.ShareZipURL}}" readonly>
+                <button type="button" class="btn btn-light-primary fw-semibold share-copy-button">
                     <i class="ki-outline ki-copy fs-3"></i>
                     <span>Copy</span>
                 </button>
             </div>
         </div>
         <script type="text/javascript" {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
-            (function () {
-                const input = document.getElementById('share_zip_url');
-                const btn = document.getElementById('share_zip_copy');
+            document.querySelectorAll('.share-copy-button').forEach(function (btn) {
+                const input = btn.parentNode.querySelector('.share-copy-input');
                 input.addEventListener('focus', function () { input.select(); });
                 btn.addEventListener('click', function () {
                     navigator.clipboard.writeText(input.value).then(function () {
@@ -120,7 +138,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         setTimeout(function () { label.textContent = 'Copy'; }, 1500);
                     });
                 });
-            })();
+            });
         </script>
         {{- end}}
         <div class="d-flex flex-stack">

@@ -310,6 +310,23 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 			compress = false
 		}
 	}
+	// fork: ?path= zips a folder inside a folder share, resumable like the whole share
+	subDir := ""
+	if p := r.URL.Query().Get("path"); info != nil && info.IsDir() && p != "" && p != "/" {
+		subDir, err = getBrowsableSharedPath(share.Paths[0], r)
+		if err != nil {
+			sendAPIResponse(w, r, err, "", http.StatusBadRequest)
+			return
+		}
+		subInfo, err := connection.Stat(subDir, 1)
+		if err != nil || !subInfo.IsDir() {
+			if err == nil {
+				err = util.NewRecordNotFoundError("not a folder")
+			}
+			sendAPIResponse(w, r, err, "", getRespStatus(err))
+			return
+		}
+	}
 
 	// fork: a resumed zip download is the same download and a HEAD request downloads nothing,
 	// neither counts as a new use
@@ -330,12 +347,17 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 		}
 		baseDir := "/"
 		files := share.Paths
+		zipName := share.Name
 		if info != nil && info.IsDir() {
 			// zip entry names are relative to the shared directory
 			baseDir = share.Paths[0]
 			files = []string{"/"}
+			if subDir != "" {
+				baseDir = subDir
+				zipName = share.Name + " - " + path.Base(subDir)
+			}
 		}
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"share-%v.zip\"", share.Name))
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"share-%v.zip\"", zipName))
 		serveResumableZip(w, r, connection, baseDir, files, &share)
 		return
 	}
