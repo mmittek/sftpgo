@@ -168,6 +168,8 @@ type shareDownloadPage struct {
 	DownloadLink string
 	Preview      *sharePreview
 	Zip          *shareZipSummary
+	// BackURL leads back to the folder of a file opened from a file list
+	BackURL string
 }
 
 type shareUploadPage struct {
@@ -1078,6 +1080,12 @@ func (s *httpdServer) handleShareGetDirContents(w http.ResponseWriter, r *http.R
 				res["thumb_url"] = getListThumbURL(path.Join(webClientPubSharesPath, share.ShareID, "preview", "thumb"),
 					share.GetRelativePath(name), info) + "&size=small"
 			}
+			if info.Mode().IsRegular() {
+				if u := getPreviewPageURL(path.Join(webClientPubSharesPath, share.ShareID, "view"),
+					share.GetRelativePath(name), info.Name()); u != "" {
+					res["preview_url"] = u
+				}
+			}
 			res["last_modified"] = getFileObjectModTime(info.ModTime())
 			results = append(results, res)
 		}
@@ -1301,7 +1309,12 @@ func (s *httpdServer) handleClientGetDirContents(w http.ResponseWriter, r *http.
 				}
 			}
 			if info.Mode().IsRegular() && hasListThumb(info.Name()) {
-				res["thumb_url"] = getListThumbURL(webClientPreviewThumbPath, name, info)
+				res["thumb_url"] = getListThumbURL(webClientPreviewThumbPath, name, info) + "&size=small"
+			}
+			if info.Mode().IsRegular() {
+				if u := getPreviewPageURL(webClientPreviewPath, name, info.Name()); u != "" {
+					res["preview_url"] = u
+				}
 			}
 			res["meta"] = fmt.Sprintf("%v_%v", res["type"], info.Name())
 			res["name"] = info.Name()

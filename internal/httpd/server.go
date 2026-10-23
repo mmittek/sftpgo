@@ -1640,6 +1640,7 @@ func (s *httpdServer) setupWebClientRoutes() {
 		s.router.Get(webClientPubSharesPath+"/{id}/preview/media", s.handleShareGetPreviewMedia)
 		s.router.Get(webClientPubSharesPath+"/{id}/preview/thumb", s.handleShareGetPreviewThumb)
 		s.router.Get(webClientPubSharesPath+"/{id}/preview/peaks", s.handleShareGetPreviewPeaks)
+		s.router.Get(webClientPubSharesPath+"/{id}/view", s.handleShareViewFile)
 
 		s.router.Group(func(router chi.Router) {
 			if s.binding.OIDC.isEnabled() {
@@ -1665,6 +1666,9 @@ func (s *httpdServer) setupWebClientRoutes() {
 			router.With(s.checkAuthRequirements, compressor.Handler, s.refreshCookie).
 				Get(webClientDirsPath, s.handleClientGetDirContents)
 			router.With(s.checkAuthRequirements).Get(webClientPreviewThumbPath, s.handleClientGetPreviewThumb)
+			router.With(s.checkAuthRequirements).Get(webClientPreviewMediaPath, s.handleClientGetPreviewMedia)
+			router.With(s.checkAuthRequirements).Get(webClientPreviewPeaksPath, s.handleClientGetPreviewPeaks)
+			router.With(s.checkAuthRequirements, s.refreshCookie).Get(webClientPreviewPath, s.handleClientPreviewPage)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).
 				Post(webClientDirsPath, createUserDir)
 			router.With(s.checkAuthRequirements, s.checkHTTPUserPerm(sdk.WebClientWriteDisabled), s.verifyCSRFHeader).

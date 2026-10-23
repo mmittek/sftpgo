@@ -672,6 +672,30 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                     icon_name = "ki-file-right"
                                 }
 
+                                // fork: a click opens the preview (or the pdf or text viewer), the download is the
+                                // arrow on the right; files without a viewer still download on click
+                                let href = row['url'];
+                                let linkAttrs = '';
+                                if (row["type"] == "2") {
+                                    let lower = row["name"].toLowerCase();
+                                    let ext = lower.slice((lower.lastIndexOf(".") - 1 >>> 0) + 2);
+                                    if (row["preview_url"]) {
+                                        href = row["preview_url"];
+                                    } else if (ext === "pdf" && PDFObject.supportsPDFs) {
+                                        href = row['url'].replace('{{.FilesURL}}','{{.ViewPDFURL}}');
+                                        linkAttrs = 'target="_blank" rel="noopener noreferrer"';
+                                    } else if (["bmp", "svg"].includes(ext)) {
+                                        let desc = data.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                                        linkAttrs = `data-iv-name="${desc}" data-iv-gallery="1"`;
+                                    }
+                                    //{{- if not .ShareUploadBaseURL}}
+                                    else if (row["edit_url"] && (supportedEditExtensions.includes(ext) || supportedEditFilenames.includes(lower))) {
+                                        href = row["edit_url"];
+                                        linkAttrs = 'target="_blank" rel="noopener noreferrer"';
+                                    }
+                                    //{{- end}}
+                                }
+                                let linkClass = linkAttrs.includes('data-iv-gallery') ? 'text-gray-800 text-hover-primary iv-gallery-item' : 'text-gray-800 text-hover-primary';
                                 if (row["thumb_url"]) {
                                     // the icon shows until the thumbnail has loaded, and stays if it cannot be made
                                     return `<div class="d-flex align-items-center">
@@ -683,7 +707,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                                 <img src="${row['thumb_url']}" alt="" loading="lazy" decoding="async"
                                                     onload="this.parentNode.classList.add('thumb-loaded')" onerror="this.remove()">
                                             </span>
-                                            <a href="${row['url']}" class="text-gray-800 text-hover-primary">${data}</a>
+                                            <a href="${href}" ${linkAttrs} class="${linkClass}">${data}</a>
                                         </div>`
                                 }
                                 return `<div class="d-flex align-items-center">
@@ -691,7 +715,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                                 <i class="path1"></i>
                                                 <i class="path2"></i>
                                             </i>
-                                            <a href="${row['url']}" class="text-gray-800 text-hover-primary">${data}</a>
+                                            <a href="${href}" ${linkAttrs} class="${linkClass}">${data}</a>
                                         </div>`
                             }
                             return data;
@@ -732,76 +756,17 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         className: 'text-end',
                         render: function (data, type, row) {
                             if (type === 'display') {
+                                // fork: the download of a file, a click on its name opens the preview
                                 let previewDiv = "";
-                                if (row["type"] == "2") {
-                                    let filename = escapeHTML(row["name"]);
-                                    let extension = filename.slice((filename.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
-                                    switch (extension) {
-                                        case "jpeg":
-                                        case "jpg":
-                                        case "png":
-                                        case "gif":
-                                        case "webp":
-                                        case "bmp":
-                                        case "svg":
-                                            let desc = filename.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                                            previewDiv = `<div class="ms-2" data-kt-filemanger-table="view_item">
-                                                    <a href="${row['url']}" data-iv-name="${desc}" class="btn btn-sm btn-icon btn-light btn-active-light-primary iv-gallery-item">
-                                                        <i class="ki-duotone ki-eye fs-6 m-0">
-                                                            <span class="path1"></span>
-                                                            <span class="path2"></span>
-                                                            <span class="path3"></span>
-                                                        </i>
-                                                    </a>
-                                                </div>`;
-                                            break;
-                                        case "mp4":
-                                        case "mov":
-                                        case "webm":
-                                        case "ogv":
-                                        case "ogg":
-                                        case "mp3":
-                                        case "wav":
-                                            previewDiv = `<div class="ms-2" data-kt-filemanger-table="view_item">
-												    <a href="#" class="btn btn-sm btn-icon btn-light btn-active-light-primary" data-kt-filemanager-table-action="view_media">
-													    <i class="ki-duotone ki-eye fs-6 m-0">
-														    <span class="path1"></span>
-														    <span class="path2"></span>
-                                                            <span class="path3"></span>
-													    </i>
-												    </a>
-											    </div>`;
-                                            break;
-                                        case "pdf":
-                                            if (PDFObject.supportsPDFs){
-                                                let view_url = row['url'];
-                                                view_url = view_url.replace('{{.FilesURL}}','{{.ViewPDFURL}}');
-                                                previewDiv = `<div class="ms-2" data-kt-filemanger-table="view_item">
-												    <a href="${view_url}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-icon btn-light btn-active-light-primary">
-													    <i class="ki-duotone ki-eye fs-6 m-0">
-														    <span class="path1"></span>
-														    <span class="path2"></span>
-                                                            <span class="path3"></span>
-													    </i>
-												    </a>
-											    </div>`;
-                                            }
-                                            break;
-                                        default:
-                                            //{{- if not .ShareUploadBaseURL}}
-                                            if (data && (supportedEditExtensions.includes(extension) || supportedEditFilenames.includes(filename.toLowerCase()))){
-                                                previewDiv = `<div class="ms-2" data-kt-filemanger-table="view_item">
-												    <a href="${data}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-icon btn-light btn-active-light-primary">
-													    <i class="ki-duotone ki-eye fs-6 m-0">
-														    <span class="path1"></span>
-														    <span class="path2"></span>
-                                                            <span class="path3"></span>
-													    </i>
-												    </a>
-											    </div>`;
-                                            }
-                                            //{{- end}}
-                                    }
+                                if (row["type"] == "2" && row["size"] !== "") {
+                                    previewDiv = `<div class="ms-2">
+                                            <a href="${row['url']}" title="Download" class="btn btn-sm btn-icon btn-light btn-active-light-primary">
+                                                <i class="ki-duotone ki-arrow-down fs-5 m-0">
+                                                    <span class="path1"></span>
+                                                    <span class="path2"></span>
+                                                </i>
+                                            </a>
+                                        </div>`;
                                 }
                                 let more = `{{- if not .ShareUploadBaseURL}}
                                             {{- if or .CanRename .CanAddFiles .CanShare }}

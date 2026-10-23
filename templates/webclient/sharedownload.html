@@ -85,6 +85,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
     {{- if .Preview}}
     {{- $logout := .LogoutURL}}
     {{- $download := .DownloadLink}}
+    {{- $back := .BackURL}}
     {{- with .Preview}}
     <div class="card shadow-sm share-preview-card">
         <div class="card-header bg-light align-items-center flex-nowrap gap-5 py-5">
@@ -104,6 +105,15 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 </div>
             </div>
             <div class="card-toolbar flex-nowrap gap-3 m-0">
+                {{- if $back}}
+                <a href="{{$back}}" class="btn btn-light text-nowrap">
+                    <i class="ki-duotone ki-arrow-left fs-2">
+                        <span class="path1"></span>
+                        <span class="path2"></span>
+                    </i>
+                    <span class="d-none d-sm-inline">Back to folder</span>
+                </a>
+                {{- end}}
                 <a href="{{$download}}" class="btn btn-primary text-nowrap">
                     <i class="ki-duotone ki-folder-down fs-2">
                         <span class="path1"></span>

@@ -62,8 +62,11 @@ const (
 	sharePreviewPeaksRate = 4000
 	// chat apps refuse to play large videos inline, above this size only the poster is advertised
 	sharePreviewOGVideoMaxSize = 100 * 1024 * 1024
-	// tiny thumbnails in the logged-in file list
+	// preview pages and assets of the logged-in file browser
+	webClientPreviewPath      = "/web/client/preview"
 	webClientPreviewThumbPath = "/web/client/preview/thumb"
+	webClientPreviewMediaPath = "/web/client/preview/media"
+	webClientPreviewPeaksPath = "/web/client/preview/peaks"
 )
 
 var (
@@ -901,6 +904,36 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	if err != nil || src == nil {
 		return nil
 	}
+	base := getRequestBaseURL(r) + path.Join(webClientPubSharesPath, share.ShareID)
+	title := share.Name
+	if title == "" {
+		title = path.Base(src.name)
+	}
+	return buildPreview(r, src, connection, title, siteName, previewURLs{
+		Page: base + "/download?compress=false",
+		// the uncompressed download of the original file, what the Download button points to
+		Download: base + "?compress=false",
+		Media:    base + "/preview/media",
+		Thumb:    base + "/preview/thumb",
+		Peaks:    base + "/preview/peaks",
+	})
+}
+
+// previewURLs are the absolute addresses a preview page uses: shares, files inside folder shares
+// and the logged-in file browser each have their own
+type previewURLs struct {
+	Page     string
+	Download string
+	Media    string
+	Thumb    string
+	Peaks    string
+}
+
+// buildPreview probes a file and returns its preview page data, starting the thumbnail in the
+// background so crawlers that fetch it next find it ready or in progress
+func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connection, title, siteName string,
+	urls previewURLs,
+) *sharePreview {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	probe, err := sharePreviews.probe(ctx, src)
@@ -919,21 +952,16 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 		}
 	}()
 
-	base := getRequestBaseURL(r) + path.Join(webClientPubSharesPath, share.ShareID)
 	preview := &sharePreview{
-		Kind:     src.kind,
-		Title:    share.Name,
-		SiteName: siteName,
-		PageURL:  base + "/download?compress=false",
-		// the uncompressed download of the original file, what the Download button points to
-		DownloadURL: base + "?compress=false",
-		MediaURL:    base + "/preview/media",
-		ThumbURL:    base + "/preview/thumb",
+		Kind:        src.kind,
+		Title:       title,
+		SiteName:    siteName,
+		PageURL:     urls.Page,
+		DownloadURL: urls.Download,
+		MediaURL:    urls.Media,
+		ThumbURL:    urls.Thumb,
 		Width:       probe.Width,
 		Height:      probe.Height,
-	}
-	if preview.Title == "" {
-		preview.Title = path.Base(src.name)
 	}
 	details := []string{util.ByteCountIEC(src.info.Size())}
 	switch src.kind {
@@ -946,7 +974,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 		}
 	case sharePreviewAudio:
 		preview.MediaType = "audio/mpeg"
-		preview.PeaksURL = base + "/preview/peaks"
+		preview.PeaksURL = urls.Peaks
 		details = append(append([]string{"Audio", formatPreviewDuration(probe.Duration)}, formatPreviewAudio(probe)...),
 			details...)
 		preview.Width, preview.Height = 1200, 630
@@ -1050,23 +1078,159 @@ func (s *httpdServer) serveListThumb(w http.ResponseWriter, r *http.Request, src
 	s.serveSharePreviewAsset(w, r, src, sharePreviewSmallSuffix, "image/jpeg", sharePreviews.genSmallThumb)
 }
 
-// handleClientGetPreviewThumb serves the tiny thumbnail of a file in the logged-in file list
+// getClientPreviewSource is the file of a logged-in preview request, the caller removes the
+// connection
+func getClientPreviewSource(w http.ResponseWriter, r *http.Request) (*sharePreviewSource, *Connection, bool) {
+	connection, err := getUserConnection(w, r)
+	if err != nil {
+		return nil, nil, false
+	}
+	name := connection.User.GetCleanedPath(r.URL.Query().Get("path"))
+	src, err := getPreviewSource(connection, name)
+	if err != nil || src == nil {
+		common.Connections.Remove(connection.GetID())
+		if err == nil {
+			err = util.NewRecordNotFoundError("no preview for this file")
+		}
+		sendAPIResponse(w, r, err, "", getRespStatus(err))
+		return nil, nil, false
+	}
+	return src, connection, true
+}
+
+// handleClientGetPreviewThumb serves the thumbnail of a file of the logged-in file browser: the
+// tiny square with size=small, the large preview image otherwise
 func (s *httpdServer) handleClientGetPreviewThumb(w http.ResponseWriter, r *http.Request) {
+	src, connection, ok := getClientPreviewSource(w, r)
+	if !ok {
+		return
+	}
+	defer common.Connections.Remove(connection.GetID())
+	switch {
+	case r.URL.Query().Get("size") == "small":
+		s.serveListThumb(w, r, src)
+	case src.kind == sharePreviewAudio:
+		s.serveBrandedWaveform(w, r, src)
+	default:
+		s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
+	}
+}
+
+func (s *httpdServer) handleClientGetPreviewMedia(w http.ResponseWriter, r *http.Request) {
+	src, connection, ok := getClientPreviewSource(w, r)
+	if !ok {
+		return
+	}
+	defer common.Connections.Remove(connection.GetID())
+	s.servePreviewMedia(w, r, src, connection, false)
+}
+
+func (s *httpdServer) handleClientGetPreviewPeaks(w http.ResponseWriter, r *http.Request) {
+	src, connection, ok := getClientPreviewSource(w, r)
+	if !ok {
+		return
+	}
+	defer common.Connections.Remove(connection.GetID())
+	if src.kind != sharePreviewAudio {
+		sendAPIResponse(w, r, nil, "Peaks are only available for audio", http.StatusNotFound)
+		return
+	}
+	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genAudio)
+}
+
+// handleClientPreviewPage opens a file of the logged-in file browser in the preview page, files
+// without a preview are downloaded as before
+func (s *httpdServer) handleClientPreviewPage(w http.ResponseWriter, r *http.Request) {
 	connection, err := getUserConnection(w, r)
 	if err != nil {
 		return
 	}
 	defer common.Connections.Remove(connection.GetID())
 	name := connection.User.GetCleanedPath(r.URL.Query().Get("path"))
-	src, err := getPreviewSource(connection, name)
-	if err != nil || src == nil {
-		if err == nil {
-			err = util.NewRecordNotFoundError("no thumbnail for this file")
+	base := getRequestBaseURL(r)
+	q := "?path=" + url.QueryEscape(name)
+	download := base + webClientFilesPath + q
+	var preview *sharePreview
+	if src, err := getPreviewSource(connection, name); err == nil && src != nil {
+		data := s.getBaseClientPageData(util.I18nShareDownloadTitle, "", w, r)
+		preview = buildPreview(r, src, connection, path.Base(name), data.Branding.Name, previewURLs{
+			Page:     base + webClientPreviewPath + q,
+			Download: download,
+			Media:    base + webClientPreviewMediaPath + q,
+			Thumb:    base + webClientPreviewThumbPath + q,
+			Peaks:    base + webClientPreviewPeaksPath + q,
+		})
+		if preview != nil {
+			data.LogoutURL = ""
+			renderClientTemplate(w, templateShareDownload, shareDownloadPage{
+				baseClientPage: data,
+				DownloadLink:   download,
+				Preview:        preview,
+				BackURL:        base + webClientFilesPath + "?path=" + url.QueryEscape(path.Dir(name)),
+			})
+			return
 		}
-		sendAPIResponse(w, r, err, "", getRespStatus(err))
+	}
+	http.Redirect(w, r, download, http.StatusFound)
+}
+
+// handleShareViewFile opens a file inside a folder share in the preview page, files without a
+// preview are downloaded as before
+func (s *httpdServer) handleShareViewFile(w http.ResponseWriter, r *http.Request) {
+	validScopes := []dataprovider.ShareScope{dataprovider.ShareScopeRead, dataprovider.ShareScopeReadWrite}
+	share, connection, err := s.checkPublicShare(w, r, validScopes)
+	if err != nil {
 		return
 	}
-	s.serveListThumb(w, r, src)
+	defer connection.CloseFS()
+	if err := validateBrowsableShare(share, connection); err != nil {
+		s.renderClientMessagePage(w, r, util.I18nShareAccessErrorTitle, getRespStatus(err), err, "")
+		return
+	}
+	name, err := getBrowsableSharedPath(share.Paths[0], r)
+	if err != nil {
+		s.renderClientMessagePage(w, r, util.I18nShareAccessErrorTitle, getRespStatus(err), err, "")
+		return
+	}
+	rel := share.GetRelativePath(name)
+	base := getRequestBaseURL(r) + path.Join(webClientPubSharesPath, share.ShareID)
+	q := "?path=" + url.QueryEscape(rel)
+	download := base + "/browse" + q
+	if src, err := getPreviewSource(connection, name); err == nil && src != nil {
+		data := s.getBaseClientPageData(util.I18nShareDownloadTitle, "", w, r)
+		preview := buildPreview(r, src, connection, path.Base(name), data.Branding.Name, previewURLs{
+			Page:     base + "/view" + q,
+			Download: download,
+			Media:    base + "/preview/media" + q,
+			Thumb:    base + "/preview/thumb" + q,
+			Peaks:    base + "/preview/peaks" + q,
+		})
+		if preview != nil {
+			data.LogoutURL = ""
+			if share.Password != "" {
+				data.LogoutURL = path.Join(webClientPubSharesPath, share.ShareID, "logout")
+			}
+			renderClientTemplate(w, templateShareDownload, shareDownloadPage{
+				baseClientPage: data,
+				DownloadLink:   download,
+				Preview:        preview,
+				BackURL:        base + "/browse?path=" + url.QueryEscape(path.Dir(rel)),
+			})
+			return
+		}
+	}
+	http.Redirect(w, r, download, http.StatusFound)
+}
+
+// getPreviewPageURL is where a file of a list opens: its preview page when it has one
+func getPreviewPageURL(baseWebPath, dir, name string) string {
+	if sharePreviews == nil {
+		return ""
+	}
+	if _, ok := sharePreviewExts[strings.ToLower(path.Ext(name))]; !ok {
+		return ""
+	}
+	return baseWebPath + "?path=" + url.QueryEscape(path.Join(dir, name))
 }
 
 // serveBrandedWaveform stamps the current branding logo on the cached waveform at request
@@ -1176,17 +1340,28 @@ func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.
 		return
 	}
 	defer connection.CloseFS()
+	s.servePreviewMedia(w, r, src, connection, true)
+}
+
+// servePreviewMedia serves what the page player loads: the 128 kbps mp3 for audio, the original
+// file for video and the scaled image for images. Share connections are registered here, the
+// logged-in ones already are
+func (s *httpdServer) servePreviewMedia(w http.ResponseWriter, r *http.Request, src *sharePreviewSource,
+	connection *Connection, register bool,
+) {
 	switch src.kind {
 	case sharePreviewAudio:
 		s.serveSharePreviewAsset(w, r, src, sharePreviewAudioSuffix, "audio/mpeg", sharePreviews.genAudio)
 	case sharePreviewImage:
 		s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
 	default:
-		if err := common.Connections.Add(connection); err != nil {
-			sendAPIResponse(w, r, err, "Unable to add connection", http.StatusTooManyRequests)
-			return
+		if register {
+			if err := common.Connections.Add(connection); err != nil {
+				sendAPIResponse(w, r, err, "Unable to add connection", http.StatusTooManyRequests)
+				return
+			}
+			defer common.Connections.Remove(connection.GetID())
 		}
-		defer common.Connections.Remove(connection.GetID())
 		if status, err := serveInlineMedia(w, r, connection, src); err != nil && status != 0 {
 			sendAPIResponse(w, r, err, "", status)
 		}
