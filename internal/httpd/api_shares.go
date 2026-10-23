@@ -306,8 +306,9 @@ func (s *httpdServer) downloadFromShare(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// fork: a resumed zip download is the same download, it does not count as a new use
-	if !compress || !isZipResume(r) {
+	// fork: a resumed zip download is the same download and a HEAD request downloads nothing,
+	// neither counts as a new use
+	if r.Method != http.MethodHead && (!compress || !isZipResume(r)) {
 		if err := dataprovider.UpdateShareLastUse(&share, 1); err != nil {
 			sendAPIResponse(w, r, err, "", getRespStatus(err))
 			return
