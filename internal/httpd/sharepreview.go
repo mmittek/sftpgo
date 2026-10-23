@@ -753,7 +753,7 @@ func cardVideoReady(src *sharePreviewSource) bool {
 	if err != nil {
 		return false
 	}
-	if shareCardLogo != nil {
+	if src.kind == sharePreviewAudio && shareCardLogo != nil {
 		if logo, updated := shareCardLogo(); logo != nil && updated.After(info.ModTime()) {
 			_ = os.Remove(p)
 			return false
@@ -762,12 +762,25 @@ func cardVideoReady(src *sharePreviewSource) bool {
 	return true
 }
 
+// cardVideoURL is the address of the card video, versioned like the picture: chat apps cache
+// videos by address
+func cardVideoURL(src *sharePreviewSource, base string) string {
+	if info, err := os.Stat(sharePreviews.path(src, sharePreviewCardVideoSuffix)); err == nil {
+		return base + "?v=" + strconv.FormatInt(info.ModTime().Unix(), 10)
+	}
+	return base
+}
+
 // queueCardVideo renders the card video in the background at share priority, for the next
 // look at the share page
 func queueCardVideo(src *sharePreviewSource) {
 	p := sharePreviews.path(src, sharePreviewCardVideoSuffix)
+	timeout := 10 * time.Minute
+	if src.kind == sharePreviewVideo {
+		timeout = time.Hour // a long 4K source decodes on the CPU
+	}
 	_, _ = tasks.submit("preview", previewJobName(src, sharePreviewCardVideoSuffix), []string{src.resolved},
-		priorityShare, 0, 10*time.Minute, func(ctx context.Context) error {
+		priorityShare, 0, timeout, func(ctx context.Context) error {
 			if _, err := os.Stat(p); err == nil {
 				return nil
 			}
@@ -776,6 +789,54 @@ func queueCardVideo(src *sharePreviewSource) {
 			}
 			return sharePreviews.genCardVideo(ctx, src)
 		})
+}
+
+const (
+	// card videos stay under 100 MB, chat apps refuse to play larger videos inline: the
+	// bitrate is planned for the budget and the output is cut at the hard limit regardless
+	cardVideoBudget     = 90 * 1024 * 1024 * 8 // bits
+	cardVideoHardLimit  = "95M"
+	videoPreviewMaxRate = 2_500_000
+	videoPreviewMinRate = 400_000
+	videoPreviewBox     = 960
+)
+
+// genVideoPreview renders the card video of a video that chat apps cannot play as it is (not
+// H.264 or above 100 MB): H.264 with the long side at most 960 pixels, 128 kbps AAC, with the
+// bitrate chosen to stay under the size budget. The fastest encoder preset, quality comes
+// second. Videos too long for the lowest bitrate are cut
+func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePreviewSource) error {
+	probe, err := c.loadProbe(ctx, src)
+	if err != nil {
+		return err
+	}
+	if probe.Width == 0 || probe.Height == 0 {
+		return errors.New("no video stream")
+	}
+	if probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize {
+		return nil // the original is offered as it is
+	}
+	duration := math.Max(probe.Duration, 1)
+	limit := duration
+	videoRate := min(float64(cardVideoBudget)/duration-128_000, videoPreviewMaxRate)
+	if videoRate < videoPreviewMinRate {
+		videoRate = videoPreviewMinRate
+		limit = cardVideoBudget / (videoPreviewMinRate + 128_000)
+	}
+	rate := strconv.Itoa(int(videoRate))
+	box := strconv.Itoa(videoPreviewBox)
+	tmpVideo := c.path(src, ".card.tmp.mp4")
+	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
+		"-map", "0:v:0", "-map", "0:a:0?", "-t", strconv.FormatFloat(limit, 'f', 3, 64),
+		"-vf", "scale='if(gt(iw,ih),min("+box+",iw),-2)':'if(gt(iw,ih),-2,min("+box+",ih))',format=yuv420p",
+		"-c:v", "libx264", "-preset", "ultrafast", "-b:v", rate, "-maxrate", rate,
+		"-bufsize", strconv.Itoa(int(videoRate*2)), "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+		"-fs", cardVideoHardLimit, "-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
+	if err != nil {
+		os.Remove(tmpVideo)
+		return fmt.Errorf("ffmpeg video preview: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return os.Rename(tmpVideo, c.path(src, sharePreviewCardVideoSuffix))
 }
 
 // stampWaveformText writes the file name on top of a 1200x630 waveform card and the details at
@@ -794,6 +855,9 @@ func stampWaveformText(img *image.RGBA, src *sharePreviewSource, probe sharePrev
 // frame per second over 128 kbps AAC, so chats that play only videos inline (Discord) can
 // play the share in the link card. About 1 MB per minute
 func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewSource) error {
+	if src.kind == sharePreviewVideo {
+		return c.genVideoPreview(ctx, src)
+	}
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
 		return err
@@ -855,13 +919,21 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	filter := fmt.Sprintf("[0:v][1:v]blend=all_expr='if(lt(X/W\\,%s)\\,A\\,B)',format=yuv420p[v]", progress)
 	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
 	rate := strconv.Itoa(fps)
+	// the still picture costs little, the audio bitrate drops for long sets to stay in budget
+	audioRate := min(128_000, float64(cardVideoBudget)/duration-40_000)
+	limit := duration
+	if audioRate < 48_000 {
+		audioRate = 48_000
+		limit = cardVideoBudget / (48_000 + 40_000)
+	}
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y",
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[0],
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[1],
 		"-i", "file:"+src.resolved, "-filter_complex", filter, "-map", "[v]", "-map", "2:a:0",
 		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-r", rate, "-g", strconv.Itoa(10*fps),
-		"-c:a", "aac", "-b:a", "128k",
-		"-ac", channels, "-shortest", "-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
+		"-c:a", "aac", "-b:a", strconv.Itoa(int(audioRate)), "-ac", channels, "-shortest",
+		"-t", strconv.FormatFloat(limit, 'f', 3, 64), "-fs", cardVideoHardLimit,
+		"-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpVideo)
 		return fmt.Errorf("ffmpeg card video: %w: %s", err, strings.TrimSpace(string(out)))
@@ -1191,19 +1263,24 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 		if urls.Video != "" {
 			if cardVideoReady(src) {
 				preview.OGVideo = true
-				// versioned like the picture: chat apps cache videos by address
-				preview.VideoURL, preview.VideoType = urls.Video, "video/mp4"
-				if info, err := os.Stat(sharePreviews.path(src, sharePreviewCardVideoSuffix)); err == nil {
-					preview.VideoURL += "?v=" + strconv.FormatInt(info.ModTime().Unix(), 10)
-				}
+				preview.VideoURL, preview.VideoType = cardVideoURL(src, urls.Video), "video/mp4"
 			} else {
 				queueCardVideo(src)
 			}
 		}
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
-		preview.OGVideo = probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize
-		preview.VideoURL, preview.VideoType = urls.Media, preview.MediaType
+		switch {
+		case probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize:
+			preview.OGVideo = true
+			preview.VideoURL, preview.VideoType = urls.Media, preview.MediaType
+		case urls.Video != "" && cardVideoReady(src):
+			// too large or a codec chat apps do not play: the small H.264 copy
+			preview.OGVideo = true
+			preview.VideoURL, preview.VideoType = cardVideoURL(src, urls.Video), "video/mp4"
+		case urls.Video != "":
+			queueCardVideo(src)
+		}
 		videoDetails := []string{"Video", formatPreviewDuration(probe.Duration), fmt.Sprintf("%dx%d", probe.Width, probe.Height)}
 		if fps := formatFrameRate(probe.FrameRate); fps != "" {
 			videoDetails = append(videoDetails, fps)
@@ -1720,8 +1797,8 @@ func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.
 	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genWaveform)
 }
 
-// handleShareGetPreviewVideo serves the waveform card video of audio shares, the og:video of
-// link previews. Not a share use, like the other preview assets
+// handleShareGetPreviewVideo serves the card video, the og:video of link previews: the waveform
+// video of audio shares, the small H.264 copy of video shares. Not a share use, like the other preview assets
 func (s *httpdServer) handleShareGetPreviewVideo(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(withTaskPriority(r.Context(), priorityShare))
 	src, _, connection, ok := s.getSharePreviewForRequest(w, r)
@@ -1729,8 +1806,8 @@ func (s *httpdServer) handleShareGetPreviewVideo(w http.ResponseWriter, r *http.
 		return
 	}
 	defer connection.CloseFS()
-	if src.kind != sharePreviewAudio {
-		sendAPIResponse(w, r, nil, "The card video is only available for audio", http.StatusNotFound)
+	if src.kind != sharePreviewAudio && src.kind != sharePreviewVideo {
+		sendAPIResponse(w, r, nil, "The card video is only available for audio and video", http.StatusNotFound)
 		return
 	}
 	cardVideoReady(src) // drops a video showing an old logo
@@ -1855,12 +1932,7 @@ func warmSharePreview(share dataprovider.Share) {
 			gen    func(context.Context, *sharePreviewSource) error
 		}{sharePreviewAudioSuffix, sharePreviews.genAudioPreview})
 	}
-	if src.kind == sharePreviewAudio && !cardVideoReady(src) {
-		assets = append(assets, struct {
-			suffix string
-			gen    func(context.Context, *sharePreviewSource) error
-		}{sharePreviewCardVideoSuffix, sharePreviews.genCardVideo})
-	}
+	cardVideo := (src.kind == sharePreviewAudio || src.kind == sharePreviewVideo) && !cardVideoReady(src)
 	for _, asset := range assets {
 		p := sharePreviews.path(src, asset.suffix)
 		if _, err := os.Stat(p); err == nil {
@@ -1878,6 +1950,9 @@ func warmSharePreview(share dataprovider.Share) {
 				}
 				return gen(ctx, src)
 			})
+	}
+	if cardVideo {
+		queueCardVideo(src)
 	}
 }
 

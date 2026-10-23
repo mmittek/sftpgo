@@ -17,7 +17,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 
 {{- define "extra_head"}}
 {{- with .Preview}}
-        <meta property="og:type" content="{{if or (eq .Kind "video") .OGVideo}}video.other{{else if eq .Kind "audio"}}music.song{{else}}website{{end}}" />
+        <meta property="og:type" content="{{if or (eq .Kind "video") (eq .Kind "audio")}}video.other{{else}}website{{end}}" />
         <meta property="og:title" content="{{.Title}}" />
         <meta property="og:description" content="{{.Description}}" />
         <meta property="og:url" content="{{.PageURL}}" />
@@ -38,11 +38,6 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         <meta property="og:video:type" content="{{.VideoType}}" />
         <meta property="og:video:width" content="{{.Width}}" />
         <meta property="og:video:height" content="{{.Height}}" />
-        {{- end}}
-        {{- if eq .Kind "audio"}}
-        <meta property="og:audio" content="{{.MediaURL}}" />
-        <meta property="og:audio:secure_url" content="{{.MediaURL}}" />
-        <meta property="og:audio:type" content="{{.MediaType}}" />
         {{- end}}
         <meta name="twitter:card" content="summary_large_image" />
         <meta name="twitter:title" content="{{.Title}}" />
