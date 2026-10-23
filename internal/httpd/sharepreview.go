@@ -572,8 +572,9 @@ func formatPreviewAudio(probe sharePreviewProbe) []string {
 	return parts
 }
 
+// formatPreviewDuration rounds down like the browser players do, so page and player agree
 func formatPreviewDuration(seconds float64) string {
-	s := int(math.Round(seconds))
+	s := int(seconds)
 	if s >= 3600 {
 		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
 	}

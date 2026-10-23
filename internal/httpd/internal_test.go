@@ -4896,8 +4896,8 @@ func TestSharePreviewPeaksAndDuration(t *testing.T) {
 	assert.Equal(t, []float64{math.Round(100/loud*1000) / 1000, math.Round(100/loud*1000) / 1000,
 		math.Round(100/loud*1000) / 1000, 1}, peaks)
 	assert.Empty(t, computePeaks(&bytes.Buffer{}, 1000, 4))
-	assert.Equal(t, "1:27", formatPreviewDuration(86.72))
-	assert.Equal(t, "1:00:01", formatPreviewDuration(3600.9))
+	assert.Equal(t, "1:26", formatPreviewDuration(86.72))
+	assert.Equal(t, "1:00:00", formatPreviewDuration(3600.9))
 	assert.Equal(t, []string{"Stereo", "48 kHz", "24-bit"},
 		formatPreviewAudio(sharePreviewProbe{Channels: 2, SampleRate: 48000, BitDepth: 24}))
 	assert.Equal(t, []string{"Mono", "44.1 kHz", "32-bit float"},
