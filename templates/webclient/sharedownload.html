@@ -75,6 +75,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         justify-content: center; background: var(--bs-primary-light, #e9f3ff); }
     .share-preview-stage { display: flex; align-items: center; justify-content: center; background: #0f0d17; }
     .share-preview-media { display: block; width: 100%; max-height: 70vh; background: #000; }
+    .share-preview-poster { object-fit: contain; }
     .share-preview-image { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; }
     .share-preview-wave { position: relative; height: 140px; border-radius: 0.65rem; overflow: hidden; cursor: pointer;
         background: linear-gradient(180deg, #121020 0%, #1c1430 100%); }
@@ -149,9 +150,13 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         <div class="card-body p-0">
             <div class="share-preview-stage">
                 {{- if eq .Kind "video"}}
+                {{- if .PreparingVideo}}
+                <img class="share-preview-media share-preview-poster" src="{{.ThumbURL}}" alt="{{.Title}}">
+                {{- else}}
                 <video class="share-preview-media" controls preload="metadata" playsinline poster="{{.ThumbURL}}">
                     <source src="{{.MediaURL}}" type="{{.MediaType}}">
                 </video>
+                {{- end}}
                 {{- else if eq .Kind "audio"}}
                 <div class="w-100 p-6">
                     <div id="share_wave" class="share-preview-wave mb-4" data-peaks="{{.PeaksURL}}">
@@ -183,6 +188,11 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 </div>
                 {{- if and (eq .Kind "audio") (not .OriginalAudio)}}
                 <div class="fs-7 text-gray-500 mt-4">The player streams a 128 kbps MP3 preview. Download gets the original file.</div>
+                {{- end}}
+                {{- if .VideoCopy}}
+                <div class="fs-7 text-gray-500 mt-4">The player streams a small preview copy. Download gets the original file.</div>
+                {{- else if .PreparingVideo}}
+                <div class="fs-7 text-gray-500 mt-4">Preparing the preview, reload the page in a minute to play it. Download gets the original file.</div>
                 {{- else if eq .Kind "image"}}
                 <div class="fs-7 text-gray-500 mt-4">Showing a scaled preview. Download gets the full resolution original.</div>
                 {{- end}}

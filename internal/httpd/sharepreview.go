@@ -146,6 +146,10 @@ type sharePreview struct {
 	OGVideo     bool
 	// OriginalAudio: the audio player plays the original file (mp3), not a preview copy
 	OriginalAudio bool
+	// VideoCopy: the page player plays the small preview copy of the video, not the original;
+	// PreparingVideo: the copy is not ready yet, the page shows the poster meanwhile
+	VideoCopy      bool
+	PreparingVideo bool
 }
 
 type sharePreviewProbe struct {
@@ -1313,8 +1317,11 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 			// ffmpeg rounds the scaled side to an even number
 			preview.VideoWidth, preview.VideoHeight = fitInBox(probe.Width, probe.Height, videoPreviewBox)
 			preview.VideoWidth, preview.VideoHeight = preview.VideoWidth&^1, preview.VideoHeight&^1
+			// share pages play the copy too, the original only comes with Download
+			preview.MediaURL, preview.MediaType, preview.VideoCopy = preview.VideoURL, "video/mp4", true
 		case urls.Video != "":
 			queueCardVideo(src)
+			preview.PreparingVideo = true
 		}
 		videoDetails := []string{"Video", formatPreviewDuration(probe.Duration), fmt.Sprintf("%dx%d", probe.Width, probe.Height)}
 		if fps := formatFrameRate(probe.FrameRate); fps != "" {
