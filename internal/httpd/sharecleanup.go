@@ -41,7 +41,11 @@ func startShareCleanup() {
 		}
 		tasks.every("share-cleanup", shareCleanupInterval, 30*time.Minute, cleanup)
 		go func() {
-			time.Sleep(time.Minute) // a first pass soon after the start
+			// once after the start: the previews of the live shares, for link previews, at share
+			// priority; new and edited shares are queued when they are saved
+			time.Sleep(30 * time.Second)
+			warmLiveShares()
+			time.Sleep(30 * time.Second) // then a first cleanup pass
 			_, _ = tasks.submit("share-cleanup", "periodic", priorityMaintenance, 0, 30*time.Minute, cleanup)
 		}()
 	})
@@ -260,5 +264,27 @@ func getShareKind(user *dataprovider.User, paths []string) string {
 		return "folder"
 	default:
 		return "file"
+	}
+}
+
+// warmLiveShares queues the previews of every live single-file share
+func warmLiveShares() {
+	for offset := 0; ; offset += 100 {
+		users, err := dataprovider.GetUsers(100, offset, dataprovider.OrderASC, "")
+		if err != nil {
+			return
+		}
+		for _, user := range users {
+			shares, err := userShares(user.Username)
+			if err != nil {
+				continue
+			}
+			for _, share := range shares {
+				warmSharePreview(share)
+			}
+		}
+		if len(users) < 100 {
+			return
+		}
 	}
 }
