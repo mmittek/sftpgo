@@ -68,6 +68,31 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     <span data-i18n="fs.upload.text">Upload Files</span>
                 </button>
                 {{- end}}
+                {{- if and .CanShare (not .ShareUploadBaseURL) (ne .CurrentDir "%2F")}}
+                <button id="id_share_current_dir" type="button" class="btn btn-flex btn-light-primary ms-3">
+                    <i class="ki-duotone ki-share fs-2">
+                        <span class="path1"></span>
+                        <span class="path2"></span>
+                        <span class="path3"></span>
+                        <span class="path4"></span>
+                        <span class="path5"></span>
+                        <span class="path6"></span>
+                    </i>
+                    <span data-i18n="fs.share">Share</span>
+                </button>
+                <script type="text/javascript" {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
+                    // fork: share the folder being browsed, the share form suggests the name
+                    document.getElementById('id_share_current_dir').addEventListener('click', function () {
+                        const dir = decodeURIComponent('{{.CurrentDir}}'.replace(/\+/g, ' ')).replace(/\/+$/, '');
+                        const cut = dir.lastIndexOf('/');
+                        const parent = cut > 0 ? dir.slice(0, cut) : '/';
+                        const name = JSON.stringify([dir.slice(cut + 1)]);
+                        const ts = new Date().getTime().toString();
+                        const shareURL = '{{.ShareURL}}';
+                        window.open(`${shareURL}?path=${encodeURIComponent(parent)}&files=${encodeURIComponent(name)}&dirs=${encodeURIComponent(name)}&_=${ts}`, '_blank');
+                    });
+                </script>
+                {{- end}}
             </div>
         </div>
     </div>
