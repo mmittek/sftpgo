@@ -183,9 +183,9 @@ NEW_SCHEMA=$(schema_version "$WORK/sftpgo.db")
 log "migration test OK: schema $OLD_SCHEMA -> $NEW_SCHEMA"
 
 RECENT=$(journalctl -t sftpgo --since "-10 min" --no-pager -o cat 2>/dev/null \
-    | grep -cE '"sender":"(Upload|Download)"|transfer' || true)
+    | grep -cE '"sender":"(Upload|Download)"' || true)
 if [ "${RECENT:-0}" -gt 0 ]; then
-    log "$RECENT transfer log lines in the last 10 minutes, a restart interrupts running transfers"
+    log "$RECENT uploads or downloads logged in the last 10 minutes, a restart interrupts running transfers"
     confirm "Restart anyway?" || die "aborted before the restart, the new image is built"
 fi
 
