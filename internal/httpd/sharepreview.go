@@ -760,6 +760,22 @@ func cardVideoReady(src *sharePreviewSource) bool {
 	return true
 }
 
+// queueCardVideo renders the card video in the background at share priority, for the next
+// look at the share page
+func queueCardVideo(src *sharePreviewSource) {
+	p := sharePreviews.path(src, sharePreviewCardVideoSuffix)
+	_, _ = tasks.submit("preview", previewJobName(src, sharePreviewCardVideoSuffix), []string{src.resolved},
+		priorityShare, 0, 10*time.Minute, func(ctx context.Context) error {
+			if _, err := os.Stat(p); err == nil {
+				return nil
+			}
+			if err := os.MkdirAll(filepath.Dir(p), 0o775); err != nil {
+				return err
+			}
+			return sharePreviews.genCardVideo(ctx, src)
+		})
+}
+
 // genCardVideo renders the audio as a small mp4, the branded waveform as a still picture at one
 // frame per second over 128 kbps AAC, so chats that play only videos inline (Discord) can
 // play the share in the link card. About 1 MB per minute
@@ -771,47 +787,72 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	if !probe.HasAudio {
 		return errors.New("no audio stream")
 	}
-	thumb := c.path(src, sharePreviewThumbSuffix)
-	if _, err := os.Stat(thumb); err != nil {
+	peaksFile := c.path(src, sharePreviewPeaksSuffix)
+	if _, err := os.Stat(peaksFile); err != nil {
 		// the job holds the file, so the waveform is made here instead of in a job of its own
 		if err := c.genWaveform(ctx, src); err != nil {
 			return err
 		}
 	}
-	f, err := os.Open(thumb)
+	data, err := os.ReadFile(peaksFile)
 	if err != nil {
 		return err
 	}
-	waveform, err := jpeg.Decode(f)
-	f.Close()
-	if err != nil {
+	var peaks []float64
+	if err := json.Unmarshal(data, &peaks); err != nil {
 		return err
 	}
-	img := image.NewRGBA(waveform.Bounds())
-	draw.Draw(img, img.Bounds(), waveform, image.Point{}, draw.Src)
-	if shareCardLogo != nil {
-		if logo, _ := shareCardLogo(); logo != nil {
-			stampLogo(img, logo, img.Bounds().Dy()/7, img.Bounds().Dy()/18)
+	// two stills like the page player: the played part in color, the rest in gray
+	const width, height = 1200, 630
+	played := renderWaveformWith(peaks, width, height, func(t float64) color.RGBA {
+		return color.RGBA{uint8(236 + 14*t), uint8(64 + 120*t), uint8(140 - 100*t), 255}
+	})
+	unplayed := renderWaveformWith(peaks, width, height, func(_ float64) color.RGBA {
+		return color.RGBA{0x5b, 0x57, 0x70, 255}
+	})
+	stills := []string{c.path(src, ".card.tmp.jpg"), c.path(src, ".card-gray.tmp.jpg")}
+	tmpVideo := c.path(src, ".card.tmp.mp4")
+	title := path.Base(src.name)
+	details := strings.Join(append(append([]string{"Audio", formatPreviewDuration(probe.Duration)},
+		formatPreviewAudio(probe)...), util.ByteCountIEC(src.info.Size())), " | ")
+	for idx, img := range []*image.RGBA{played, unplayed} {
+		defer os.Remove(stills[idx])
+		// the file name on top, the details at the bottom left, clear of the logo
+		drawCardText(img, title, 24, true, waveformMargin, 44, width-2*waveformMargin, color.RGBA{0xf4, 0xf1, 0xff, 255})
+		drawCardText(img, details, 16, false, waveformMargin, height-24, width-2*waveformMargin-200,
+			color.RGBA{0xa9, 0xa3, 0xc4, 255})
+		if shareCardLogo != nil {
+			if logo, _ := shareCardLogo(); logo != nil {
+				stampLogo(img, logo, height/7, height/18)
+			}
+		}
+		f, err := os.Create(stills[idx])
+		if err != nil {
+			return err
+		}
+		err = jpeg.Encode(f, img, &jpeg.Options{Quality: 90})
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return err
 		}
 	}
-	still := c.path(src, ".card.tmp.jpg")
-	tmpVideo := c.path(src, ".card.tmp.mp4")
-	defer os.Remove(still)
-	sf, err := os.Create(still)
-	if err != nil {
-		return err
-	}
-	err = jpeg.Encode(sf, img, &jpeg.Options{Quality: 90})
-	if closeErr := sf.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
+	// the played color sweeps over the bars with the playback time; short files get more
+	// frames so the sweep does not jump
+	duration := math.Max(probe.Duration, 1)
+	fps := min(10, max(1, int(600/duration)))
+	barsWidth := float64((width - 2*waveformMargin) / (waveformBar + waveformGap) * (waveformBar + waveformGap))
+	progress := fmt.Sprintf("(%d+T/%f*%f)/%d", waveformMargin, duration, barsWidth, width)
+	filter := fmt.Sprintf("[0:v][1:v]blend=all_expr='if(lt(X/W\\,%s)\\,A\\,B)',format=yuv420p[v]", progress)
 	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
-	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", "1", "-i", "file:"+still,
-		"-i", "file:"+src.resolved, "-map", "0:v", "-map", "1:a:0", "-c:v", "libx264", "-preset", "veryfast",
-		"-tune", "stillimage", "-pix_fmt", "yuv420p", "-r", "1", "-g", "10", "-c:a", "aac", "-b:a", "128k",
+	rate := strconv.Itoa(fps)
+	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y",
+		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[0],
+		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[1],
+		"-i", "file:"+src.resolved, "-filter_complex", filter, "-map", "[v]", "-map", "2:a:0",
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-r", rate, "-g", strconv.Itoa(10*fps),
+		"-c:a", "aac", "-b:a", "128k",
 		"-ac", channels, "-shortest", "-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpVideo)
@@ -862,6 +903,18 @@ func computePeaks(r io.Reader, expectedSamples float64, buckets int) []float64 {
 
 // renderWaveform draws mirrored waveform bars on a dark gradient, sized for link previews
 func renderWaveform(peaks []float64, width, height int) image.Image {
+	return renderWaveformWith(peaks, width, height, func(t float64) color.RGBA {
+		// magenta to amber across the timeline
+		return color.RGBA{uint8(236 + 14*t), uint8(64 + 120*t), uint8(140 - 100*t), 255}
+	})
+}
+
+// the bar layout of renderWaveform: bars start at this margin and step by bar + gap
+const waveformBar, waveformGap, waveformMargin = 4, 2, 60
+
+// renderWaveformWith draws the waveform with the bar color picked by the position on the
+// timeline, from 0 to 1
+func renderWaveformWith(peaks []float64, width, height int, barColor func(t float64) color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	for y := 0; y < height; y++ {
 		t := float64(y) / float64(height)
@@ -873,7 +926,7 @@ func renderWaveform(peaks []float64, width, height int) image.Image {
 	if len(peaks) == 0 {
 		return img
 	}
-	const bar, gap, margin = 4, 2, 60
+	const bar, gap, margin = waveformBar, waveformGap, waveformMargin
 	mid := height / 2
 	bars := (width - 2*margin) / (bar + gap)
 	for i := 0; i < bars; i++ {
@@ -885,9 +938,7 @@ func renderWaveform(peaks []float64, width, height int) image.Image {
 			v = math.Max(v, p)
 		}
 		h := int(math.Max(2, v*float64(height/2-margin)))
-		t := float64(i) / float64(bars)
-		// magenta to amber across the timeline
-		c := color.RGBA{uint8(236 + 14*t), uint8(64 + 120*t), uint8(140 - 100*t), 255}
+		c := barColor(float64(i) / float64(bars))
 		x0 := margin + i*(bar+gap)
 		for x := x0; x < x0+bar; x++ {
 			for y := mid - h; y <= mid+h; y++ {
@@ -1129,9 +1180,13 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 			details...)
 		preview.Width, preview.Height = 1200, 630
 		// advertised once rendered: a link preview that finds no video keeps the plain card
-		if urls.Video != "" && cardVideoReady(src) {
-			preview.OGVideo = true
-			preview.VideoURL, preview.VideoType = urls.Video, "video/mp4"
+		if urls.Video != "" {
+			if cardVideoReady(src) {
+				preview.OGVideo = true
+				preview.VideoURL, preview.VideoType = urls.Video, "video/mp4"
+			} else {
+				queueCardVideo(src)
+			}
 		}
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
