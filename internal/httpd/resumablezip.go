@@ -667,3 +667,65 @@ func zipIfRange(r *http.Request, layout *zipLayout) bool {
 	t, err := http.ParseTime(ifRange)
 	return err == nil && !layout.modTime.Truncate(time.Second).After(t)
 }
+
+// shareZipListLimit caps the files listed on a share page, the zip holds all of them
+const shareZipListLimit = 500
+
+// shareZipSummary describes on a share page what the zip download contains
+type shareZipSummary struct {
+	Title       string
+	Files       []shareZipFile
+	More        int
+	FileCount   int
+	FolderCount int
+	Size        string
+	DownloadURL string
+	BrowseURL   string
+}
+
+type shareZipFile struct {
+	Name string
+	Size string
+}
+
+// getShareZipSummary lists the files of the zip a share downloads: the same listing the zip is
+// built from, so the size shown is the exact size of the download
+func getShareZipSummary(r *http.Request, share *dataprovider.Share, conn *Connection) *shareZipSummary {
+	baseDir, files := "/", share.Paths
+	isDir := false
+	if len(share.Paths) == 1 {
+		info, err := conn.Stat(share.Paths[0], 1)
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			baseDir, files, isDir = share.Paths[0], []string{"/"}, true
+		}
+	}
+	layout, err := buildZipLayout(conn, baseDir, files)
+	if err != nil {
+		conn.Log(logger.LevelDebug, "unable to list the zip of share %q: %v", share.ShareID, err)
+		return nil
+	}
+	base := getRequestBaseURL(r) + path.Join(webClientPubSharesPath, share.ShareID)
+	summary := &shareZipSummary{Title: share.Name, Size: util.ByteCountIEC(layout.total), DownloadURL: base}
+	if summary.Title == "" {
+		summary.Title = path.Base(share.Paths[0])
+	}
+	if isDir {
+		summary.BrowseURL = base + "/browse"
+	}
+	for _, e := range layout.entries {
+		if e.dir {
+			summary.FolderCount++
+			continue
+		}
+		summary.FileCount++
+		if len(summary.Files) < shareZipListLimit {
+			summary.Files = append(summary.Files, shareZipFile{Name: e.name, Size: util.ByteCountIEC(e.size)})
+		} else {
+			summary.More++
+		}
+	}
+	return summary
+}

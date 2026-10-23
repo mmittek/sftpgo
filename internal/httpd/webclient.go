@@ -167,6 +167,7 @@ type shareDownloadPage struct {
 	baseClientPage
 	DownloadLink string
 	Preview      *sharePreview
+	Zip          *shareZipSummary
 }
 
 type shareUploadPage struct {
@@ -825,6 +826,9 @@ func (s *httpdServer) renderShareDownloadPage(w http.ResponseWriter, r *http.Req
 		DownloadLink:   downloadLink,
 	}
 	data.Preview = s.getSharePreview(r, share, connection, data.Branding.Name)
+	if data.Preview == nil {
+		data.Zip = getShareZipSummary(r, share, connection)
+	}
 	data.LogoutURL = ""
 	if share.Password != "" {
 		data.LogoutURL = path.Join(webClientPubSharesPath, share.ShareID, "logout")

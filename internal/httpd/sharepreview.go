@@ -552,9 +552,10 @@ func (c *sharePreviewCache) renderStill(ctx context.Context, src *sharePreviewSo
 		return c.genRawThumb(ctx, src, filter, suffix)
 	}
 	args := []string{"-v", "error", "-y"}
-	if src.kind == sharePreviewImage {
-		// a "%" in the file name must not be read as an image sequence pattern
-		args = append(args, "-pattern_type", "none")
+	if src.kind == sharePreviewImage && strings.Contains(filepath.Base(src.resolved), "%") {
+		// a "%" in the file name must not be read as an image sequence pattern; the option exists
+		// only in the image2 reader, ffmpeg picks other readers for png and webp files
+		args = append(args, "-f", "image2", "-pattern_type", "none")
 	}
 	if src.kind == sharePreviewVideo {
 		probe, err := c.loadProbe(ctx, src)
