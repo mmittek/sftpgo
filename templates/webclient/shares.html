@@ -76,7 +76,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             </div>
             <div class="modal-body fs-5">
                 <div id="readShare" class="mb-5">
-                    <div class="mb-3">
+                    <div id="linkZip" class="share-link-section mb-3">
                         <h4 data-i18n="share.link_single_title">Single zip file</h4>
                         <p data-i18n="share.link_single_desc">You can download shared content as a single zip file</p>
                         <div class="d-flex">
@@ -96,8 +96,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                             </a>
                         </div>
                     </div>
-                    <hr>
-                    <div class="mb-3 mt-10">
+                    <div id="linkBrowse" class="share-link-section mb-3">
                         <h4 data-i18n="share.link_dir_title">Single directory</h4>
                         <p data-i18n="share.link_dir_desc">If the share consists of a single directory you can browse and download files</p>
                         <button id="readBrowseLinkCopy" data-clipboard-target="#readBrowseLink" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy me-3">
@@ -115,8 +114,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                             <span data-i18n="share.go">Go to share</span>
                         </a>
                     </div>
-                    <hr>
-                    <div class="mt-10">
+                    <div id="linkFile" class="share-link-section">
                         <h4 data-i18n="share.link_uncompressed_title">Uncompressed file</h4>
                         <p data-i18n="share.link_uncompressed_desc">If the share consists of a single file you can download it uncompressed</p>
                         <button id="readUncompressedLinkCopy"  data-clipboard-target="#readUncompressedLink" type="button" class="btn btn-flex btn-light-primary btn-clipboard-copy me-3">
@@ -154,6 +152,9 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 </div>
                 <div data-i18n="share.expired_desc" id="expiredShare" class="fw-semibold fs-4 mb-5">
                     This share is no longer accessible because it has expired
+                </div>
+                <div id="missingShare" class="fw-semibold fs-4 mb-5">
+                    The shared file or folder no longer exists, so this share cannot be used
                 </div>
             </div>
         </div>
@@ -224,9 +225,33 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
         window.location.replace('{{.ShareURL}}' + "/" + encodeURIComponent(shareID));
     }
 
-    function showShareLink(shareID, shareScope, expiresAt) {
+    // fork: only the links that fit what the share points at
+    function showShareSections(kind) {
+        const visible = {
+            linkZip: kind !== 'file',
+            linkBrowse: kind === 'folder' || !kind,
+            linkFile: kind === 'file' || !kind,
+        };
+        let first = true;
+        Object.keys(visible).forEach(function (id) {
+            const el = document.getElementById(id);
+            el.classList.toggle('d-none', !visible[id]);
+            el.classList.toggle('border-top', visible[id] && !first);
+            el.classList.toggle('pt-8', visible[id] && !first);
+            el.classList.toggle('mt-8', visible[id] && !first);
+            if (visible[id]) first = false;
+        });
+    }
+
+    function showShareLink(shareID, shareScope, expiresAt, kind) {
+        $('#missingShare').hide();
         if (expiresAt < Date.now()) {
             $('#expiredShare').show();
+            $('#writeShare').hide();
+            $('#readShare').hide();
+        } else if (kind === 'missing') {
+            $('#missingShare').show();
+            $('#expiredShare').hide();
             $('#writeShare').hide();
             $('#readShare').hide();
         } else {
@@ -240,6 +265,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             if (shareScope == '1') {
                 $('#expiredShare').hide();
                 $('#writeShare').hide();
+                showShareSections(kind);
                 $('#readShare').show();
                 $('#readLink').attr("href", shareURL + "/download");
                 $('#readLink').attr("title", shareURL + "/download");
@@ -294,7 +320,25 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                         data: "name",
                         render: function(data, type, row) {
                             if (type === 'display') {
-                                return escapeHTML(data);
+                                // fork: a file or folder icon, and a note when the shared path is gone
+                                const icons = {folder: 'ki-folder', file: 'ki-file', multiple: 'ki-files',
+                                    missing: 'ki-information'};
+                                const icon = icons[row["kind"]];
+                                let html = escapeHTML(data);
+                                if (row["kind"] === 'missing') {
+                                    html += ' <span class="badge badge-light-warning ms-2">missing</span>';
+                                }
+                                if (!icon) {
+                                    return html;
+                                }
+                                return `<div class="d-flex align-items-center">
+                                            <i class="ki-duotone ${icon} fs-2x text-primary me-3">
+                                                <span class="path1"></span>
+                                                <span class="path2"></span>
+                                                <span class="path3"></span>
+                                            </i>
+                                            <span>${html}</span>
+                                        </div>`;
                             }
                             return data;
                         }
@@ -494,7 +538,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 el.on("click", function(e){
                     e.preventDefault();
                     let rowData = dt.row(e.target.closest('tr')).data();
-                    showShareLink(rowData["id"], rowData["scope"], rowData["expires_at"]);
+                    showShareLink(rowData["id"], rowData["scope"], rowData["expires_at"], rowData["kind"]);
                 });
             });
         }

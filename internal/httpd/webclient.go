@@ -1675,12 +1675,18 @@ func getAllShares(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// fork: each share says what it points at, so the page offers the links that fit
+	user, userErr := dataprovider.GetUserWithGroupSettings(claims.Username, "")
 	dataGetter := func(limit, offset int) ([]byte, int, error) {
 		shares, err := dataprovider.GetShares(limit, offset, dataprovider.OrderASC, claims.Username)
 		if err != nil {
 			return nil, 0, err
 		}
-		data, err := json.Marshal(shares)
+		if userErr != nil {
+			data, err := json.Marshal(shares)
+			return data, len(shares), err
+		}
+		data, err := json.Marshal(withShareKinds(&user, shares))
 		return data, len(shares), err
 	}
 

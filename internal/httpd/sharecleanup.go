@@ -224,3 +224,41 @@ func clearCacheDir(cacheDir, source string) int {
 	_ = os.Remove(cacheDir)
 	return removed
 }
+
+// shareWithKind is a share as listed to its owner, with what it points at: "file", "folder",
+// "multiple" (several paths) or "missing" (the shared path no longer exists)
+type shareWithKind struct {
+	dataprovider.Share
+	Kind string `json:"kind"`
+}
+
+func withShareKinds(user *dataprovider.User, shares []dataprovider.Share) []shareWithKind {
+	result := make([]shareWithKind, 0, len(shares))
+	for _, share := range shares {
+		result = append(result, shareWithKind{Share: share, Kind: getShareKind(user, share.Paths)})
+	}
+	return result
+}
+
+func getShareKind(user *dataprovider.User, paths []string) string {
+	if len(paths) != 1 {
+		return "multiple"
+	}
+	fsys, err := user.GetFilesystemForPath(paths[0], "")
+	if err != nil {
+		return "missing"
+	}
+	resolved, err := fsys.ResolvePath(paths[0])
+	if err != nil {
+		return "missing"
+	}
+	info, err := fsys.Stat(resolved)
+	switch {
+	case err != nil:
+		return "missing"
+	case info.IsDir():
+		return "folder"
+	default:
+		return "file"
+	}
+}
