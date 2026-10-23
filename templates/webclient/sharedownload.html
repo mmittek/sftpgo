@@ -76,6 +76,13 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
     .share-preview-stage { display: flex; align-items: center; justify-content: center; background: #0f0d17; }
     .share-preview-media { display: block; width: 100%; max-height: 70vh; background: #000; }
     .share-preview-poster { object-fit: contain; }
+    /* phones: title on its own line, the buttons below it sharing the width */
+    @media (max-width: 767.98px) {
+        .share-preview-header .share-preview-actions { width: 100%; }
+        .share-preview-header .share-preview-actions .btn { flex: 1 1 0; justify-content: center; }
+        .share-preview-header .fs-4 { font-size: 1.05rem !important; }
+        .share-preview-header .share-preview-icon { width: 40px; height: 40px; }
+    }
     .share-preview-image { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; }
     .share-preview-wave { position: relative; height: 140px; border-radius: 0.65rem; overflow: hidden; cursor: pointer;
         background: linear-gradient(180deg, #121020 0%, #1c1430 100%); }
@@ -91,12 +98,12 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 {{- end}}
 
 {{- define "page_body"}}
-<div class="d-flex flex-center flex-column flex-column-fluid p-10 pb-lg-20">
-    <div class="mb-12">
+<div class="d-flex flex-center flex-column flex-column-fluid p-4 p-md-10 pb-lg-20">
+    <div class="mb-8 mb-md-12 d-flex align-items-center flex-wrap justify-content-center">
         <span>
-            <img alt="Logo" src="{{.StaticURL}}{{.Branding.LogoPath}}" class="h-80px h-md-90px h-lg-100px" />
+            <img alt="Logo" src="{{.StaticURL}}{{.Branding.LogoPath}}" class="h-60px h-md-90px h-lg-100px" />
         </span>
-        <span class="text-gray-900 fs-1 fw-bold ms-3 ps-5">
+        <span class="text-gray-900 fs-1 fw-bold ms-3 ps-md-5">
 		    {{.Branding.ShortName}}
         </span>
     </div>
@@ -106,8 +113,8 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
     {{- $back := .BackURL}}
     {{- with .Preview}}
     <div class="card shadow-sm share-preview-card">
-        <div class="card-header bg-light align-items-center flex-nowrap gap-5 py-5">
-            <div class="d-flex align-items-center gap-4 min-w-0">
+        <div class="card-header bg-light align-items-center flex-wrap flex-md-nowrap gap-4 gap-md-5 py-5 share-preview-header">
+            <div class="d-flex align-items-center gap-4 min-w-0 flex-grow-1">
                 <div class="share-preview-icon flex-shrink-0">
                     <i class="ki-duotone {{if eq .Kind "video"}}ki-youtube{{else if eq .Kind "audio"}}ki-speaker{{else}}ki-picture{{end}} fs-2x text-primary">
                         <span class="path1"></span>
@@ -122,7 +129,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     <div class="fs-4 fw-bold text-gray-900 text-truncate" title="{{.Title}}">{{.Title}}</div>
                 </div>
             </div>
-            <div class="card-toolbar flex-nowrap gap-3 m-0">
+            <div class="card-toolbar flex-nowrap gap-3 m-0 share-preview-actions">
                 {{- if $back}}
                 <a href="{{$back}}" class="btn btn-light text-nowrap">
                     <i class="ki-duotone ki-arrow-left fs-2">
@@ -151,14 +158,14 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
             <div class="share-preview-stage">
                 {{- if eq .Kind "video"}}
                 {{- if .PreparingVideo}}
-                <img class="share-preview-media share-preview-poster" src="{{.ThumbURL}}" alt="{{.Title}}">
+                <img id="share_preparing" class="share-preview-media share-preview-poster" src="{{.ThumbURL}}" alt="{{.Title}}" data-video="{{.PreparingURL}}">
                 {{- else}}
                 <video class="share-preview-media" controls preload="metadata" playsinline poster="{{.ThumbURL}}">
                     <source src="{{.MediaURL}}" type="{{.MediaType}}">
                 </video>
                 {{- end}}
                 {{- else if eq .Kind "audio"}}
-                <div class="w-100 p-6">
+                <div class="w-100 p-4 p-md-6">
                     <div id="share_wave" class="share-preview-wave mb-4" data-peaks="{{.PeaksURL}}">
                         <canvas id="share_wave_canvas"></canvas>
                         <div id="share_wave_loading" class="wave-loading">Drawing waveform...</div>
@@ -192,7 +199,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                 {{- if .VideoCopy}}
                 <div class="fs-7 text-gray-500 mt-4">The player streams a small preview copy. Download gets the original file.</div>
                 {{- else if .PreparingVideo}}
-                <div class="fs-7 text-gray-500 mt-4">Preparing the preview, reload the page in a minute to play it. Download gets the original file.</div>
+                <div id="share_preparing_note" class="fs-7 text-gray-500 mt-4">Preparing the preview, it starts here by itself when ready. Download gets the original file.</div>
                 {{- else if eq .Kind "image"}}
                 <div class="fs-7 text-gray-500 mt-4">Showing a scaled preview. Download gets the full resolution original.</div>
                 {{- end}}
@@ -204,8 +211,8 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
     {{- $logout := .LogoutURL}}
     {{- with .Zip}}
     <div class="card shadow-sm share-preview-card">
-        <div class="card-header bg-light align-items-center flex-nowrap gap-5 py-5">
-            <div class="d-flex align-items-center gap-4 min-w-0">
+        <div class="card-header bg-light align-items-center flex-wrap flex-md-nowrap gap-4 gap-md-5 py-5 share-preview-header">
+            <div class="d-flex align-items-center gap-4 min-w-0 flex-grow-1">
                 <div class="share-preview-icon flex-shrink-0">
                     <i class="ki-duotone ki-folder fs-2x text-primary">
                         <span class="path1"></span>
@@ -217,7 +224,7 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                     <div class="fs-4 fw-bold text-gray-900 text-truncate" title="{{.Title}}">{{.Title}}</div>
                 </div>
             </div>
-            <div class="card-toolbar flex-nowrap gap-3 m-0">
+            <div class="card-toolbar flex-nowrap gap-3 m-0 share-preview-actions">
                 <a href="{{.DownloadURL}}" class="btn btn-primary text-nowrap">
                     <i class="ki-duotone ki-folder-down fs-2">
                         <span class="path1"></span>
@@ -304,6 +311,34 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
 
 {{- define "extra_js"}}
 {{- if or .Preview .Zip}}
+{{- if .Preview}}{{- if .Preview.PreparingVideo}}
+<script type="text/javascript" {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
+    // the preview copy is being made: wait for it (the request returns once it is ready), then
+    // put the player in place of the poster
+    (function () {
+        const poster = document.getElementById('share_preparing');
+        if (!poster) return;
+        function attempt(n) {
+            fetch(poster.dataset.video, { method: 'HEAD', cache: 'no-store' }).then(function (resp) {
+                if (!resp.ok) throw new Error(resp.status);
+                const video = document.createElement('video');
+                video.className = 'share-preview-media';
+                video.controls = true;
+                video.playsInline = true;
+                video.preload = 'metadata';
+                video.poster = poster.src;
+                video.src = poster.dataset.video;
+                poster.replaceWith(video);
+                const note = document.getElementById('share_preparing_note');
+                if (note) note.textContent = 'The player streams a small preview copy. Download gets the original file.';
+            }).catch(function () {
+                if (n < 30) setTimeout(function () { attempt(n + 1); }, 10000);
+            });
+        }
+        attempt(0);
+    })();
+</script>
+{{- end}}{{- end}}
 <script type="text/javascript" {{- if .CSPNonce}} nonce="{{.CSPNonce}}"{{- end}}>
     (function () {
         const btn = document.getElementById('share_copy_url');

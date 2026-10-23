@@ -150,6 +150,8 @@ type sharePreview struct {
 	// PreparingVideo: the copy is not ready yet, the page shows the poster meanwhile
 	VideoCopy      bool
 	PreparingVideo bool
+	// PreparingURL is where the page waits for the copy
+	PreparingURL string
 }
 
 type sharePreviewProbe struct {
@@ -1321,7 +1323,7 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 			preview.MediaURL, preview.MediaType, preview.VideoCopy = preview.VideoURL, "video/mp4", true
 		case urls.Video != "":
 			queueCardVideo(src)
-			preview.PreparingVideo = true
+			preview.PreparingVideo, preview.PreparingURL = true, urls.Video
 		}
 		videoDetails := []string{"Video", formatPreviewDuration(probe.Duration), fmt.Sprintf("%dx%d", probe.Width, probe.Height)}
 		if fps := formatFrameRate(probe.FrameRate); fps != "" {
