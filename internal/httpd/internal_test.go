@@ -36,6 +36,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -5165,4 +5166,58 @@ func TestResumableZip64(t *testing.T) {
 	n, err := io.Copy(io.Discard, rc) // the CRC-32 is checked at EOF
 	assert.NoError(t, err)
 	assert.Equal(t, int64(4608<<20), n)
+}
+
+func TestTaskManager(t *testing.T) {
+	m := newTaskManager(map[taskLane]int{laneInteractive: 1, laneBackground: 1})
+	// the same key joins the queued or running task
+	release := make(chan struct{})
+	runs := 0
+	slow := func(_ context.Context) error {
+		runs++
+		<-release
+		return nil
+	}
+	first, err := m.submit("k", "a", laneBackground, 0, time.Minute, slow)
+	assert.NoError(t, err)
+	second, err := m.submit("k", "a", laneBackground, 0, time.Minute, slow)
+	assert.NoError(t, err)
+	assert.Same(t, first, second)
+	close(release)
+	<-first.done
+	assert.Equal(t, 1, runs)
+	// a cooldown keeps a key from running again too soon
+	quick := func(_ context.Context) error { return nil }
+	cooled, err := m.submit("k", "b", laneBackground, time.Hour, time.Minute, quick)
+	assert.NoError(t, err)
+	<-cooled.done
+	_, err = m.submit("k", "b", laneBackground, time.Hour, time.Minute, quick)
+	assert.ErrorIs(t, err, errTaskCoolDown)
+	// a panic fails the task, not the process, and a timeout cancels the context
+	assert.ErrorContains(t, m.run(context.Background(), "k", "panic", laneInteractive, time.Minute,
+		func(_ context.Context) error { panic("boom") }), "panic: boom")
+	assert.ErrorIs(t, m.run(context.Background(), "k", "slow", laneInteractive, 50*time.Millisecond,
+		func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}), context.DeadlineExceeded)
+	// a full queue drops work instead of growing
+	block := make(chan struct{})
+	_, err = m.submit("fill", "busy", laneBackground, 0, time.Minute, func(_ context.Context) error {
+		<-block
+		return nil
+	})
+	assert.NoError(t, err)
+	time.Sleep(50 * time.Millisecond) // the worker picks up the blocking task
+	dropped := 0
+	for i := range taskQueueSize + 10 {
+		if _, err := m.submit("fill", strconv.Itoa(i), laneBackground, 0, time.Minute, quick); errors.Is(err, errTaskDropped) {
+			dropped++
+		}
+	}
+	assert.Equal(t, 10, dropped)
+	close(block)
+	status := m.snapshot()
+	assert.Equal(t, int64(10), status.Kinds["fill"].Dropped)
+	assert.Equal(t, int64(2), status.Kinds["k"].Failed)
 }

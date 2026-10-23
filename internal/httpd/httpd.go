@@ -1126,6 +1126,7 @@ func (c *Conf) Initialize(configDir string, isShared int) error {
 		return err
 	}
 	logger.Info(logSender, "", "initializing HTTP server with config %+v", c.getRedacted())
+	startShareCleanup()
 	configurationDir = configDir
 	invalidatedJWTTokens = newTokenManager(isShared)
 	resetCodesMgr = newResetCodeManager(isShared)

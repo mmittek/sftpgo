@@ -38,14 +38,20 @@ services:
       - SFTPGO_COMMON__UPLOAD_MODE=2
       - SFTPGO_HTTPD__MAX_UPLOAD_FILE_SIZE=0
       - SHARE_PREVIEWS=true
+      # what the background task manager is doing, rewritten every 15 seconds
+      - TASKS_STATUS_FILE=/var/lib/sftpgo/tasks-status.json
     volumes:
       - ${STORAGEPOOL_PATH}:/srv/sftpgo/data
       - ${DATA_PATH}:/var/lib/sftpgo
     user: "${SFTPGO_UID}:${SFTPGO_GID}"
+    # one place for logs: the host journal, rotated and capped by journald itself.
+    # non-blocking: if the journal stalls, log lines are dropped instead of freezing SFTPGo
     logging:
       driver: journald
       options:
         tag: sftpgo
+        mode: non-blocking
+        max-buffer-size: 4m
     ulimits:
       nofile:
         soft: 65535

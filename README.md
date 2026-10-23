@@ -19,6 +19,7 @@ A fork of [drakkan/sftpgo](https://github.com/drakkan/sftpgo) that runs the DPM 
   - resumes and HEAD requests do not count as share uses.
 
   Tested with Info-ZIP unzip, Python, 7-Zip and libarchive; zip64 tested with a 4.5 GiB file.
+- **Dead shares are deleted.** An hourly task deletes shares that expired or used up their download limit, and clears the previews and zip checksums kept for them in `.cache` (unless another live share covers the same files). Until then the link says why it stopped working and the owner can still extend the share; afterwards it says the link is no longer available (it may have expired, reached its download limit or been removed). Deleting a share by hand clears its cache too (`internal/httpd/sharecleanup.go`).
 - **Hidden entries stay out of public shares.** Names starting with a dot (`.cache`, `.tmp`, `.DS_Store`, macOS `._` files) and everything inside dot folders are not listed, not added to zip downloads and cannot be downloaded through a public share, even when requested by path. The owner still sees them over SFTP, WebDAV and the logged-in web client. This is done by merging a hide rule for `.*` into the owner's pattern rules on every share connection (`internal/httpd/sharehidden.go`).
 
 ### Media previews for single-file shares
@@ -36,6 +37,10 @@ The share page (`/web/client/pubshares/<id>/download`) of a single video, audio 
 - **Cache cleanup:** folders listed in the web client or through a share are queued (at most every 10 minutes per folder) for a background check that removes previews whose original was deleted, renamed or changed, leftovers of interrupted jobs, and the `.cache` folder once empty. Only file names written by the preview code are touched (`internal/httpd/sharepreviewsweep.go`).
 - **Share uses:** preview requests honor expiry, passwords and permissions but do not count as share uses, since a player sends many range requests while seeking.
 - Enabled with `SHARE_PREVIEWS=true`. ffmpeg and exiftool are installed in the Docker image.
+
+### Background tasks
+
+One task manager (`internal/httpd/tasks.go`) runs the work behind previews, cache upkeep and share cleanup: an interactive lane (2 workers) for previews someone is waiting for and a background lane (1 worker) for cache sweeps, share cleanup and cache clearing. Tasks are keyed (submitting a queued or running key joins it), can have a cooldown per key (a folder is swept at most every 10 minutes), run with a timeout and a panic guard, and full queues drop upkeep work instead of growing. Periodic tasks (share cleanup, hourly) are registered in one place. The manager rewrites a status file every 15 seconds (`TASKS_STATUS_FILE`); `dpm/deploy.sh --status` prints it.
 
 ### Web client and API
 

@@ -31,7 +31,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/drakkan/sftpgo/v2/internal/common"
@@ -99,10 +98,7 @@ func init() {
 	if enabled, _ := strconv.ParseBool(os.Getenv("SHARE_PREVIEWS")); !enabled {
 		return
 	}
-	sharePreviews = &sharePreviewCache{
-		sem:  make(chan struct{}, 2),
-		jobs: make(map[string]*sharePreviewJob),
-	}
+	sharePreviews = &sharePreviewCache{}
 }
 
 // sharePreview is the template data for a previewable share
@@ -162,16 +158,7 @@ type sharePreviewSource struct {
 	key      string
 }
 
-type sharePreviewJob struct {
-	done chan struct{}
-	err  error
-}
-
-type sharePreviewCache struct {
-	sem  chan struct{}
-	mu   sync.Mutex
-	jobs map[string]*sharePreviewJob
-}
+type sharePreviewCache struct{}
 
 // path returns where an asset of the shared file lives: <dir>/.cache/<file name><suffix>
 func (c *sharePreviewCache) path(src *sharePreviewSource, suffix string) string {
@@ -198,34 +185,11 @@ func (c *sharePreviewCache) dropStale(src *sharePreviewSource) {
 	}
 }
 
-// run executes fn once per name while concurrent callers wait for the same result
+// run executes fn once per name while concurrent callers wait for the same result, in the
+// interactive lane of the task manager: the job outlives the request that started it, so a
+// crawler that gives up does not waste the work for the next one
 func (c *sharePreviewCache) run(ctx context.Context, name string, fn func(context.Context) error) error {
-	c.mu.Lock()
-	job, ok := c.jobs[name]
-	if !ok {
-		job = &sharePreviewJob{done: make(chan struct{})}
-		c.jobs[name] = job
-		go func() {
-			c.sem <- struct{}{}
-			// the job outlives the request that started it, so a crawler that gives up
-			// does not waste the work for the next one
-			jobCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			job.err = fn(jobCtx)
-			cancel()
-			<-c.sem
-			c.mu.Lock()
-			delete(c.jobs, name)
-			c.mu.Unlock()
-			close(job.done)
-		}()
-	}
-	c.mu.Unlock()
-	select {
-	case <-job.done:
-		return job.err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return tasks.run(ctx, "preview", name, laneInteractive, 10*time.Minute, fn)
 }
 
 // ensure returns the path of a cached asset, generating it if missing
@@ -946,7 +910,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	if src.kind == sharePreviewAudio && !probe.HasAudio {
 		return nil
 	}
-	previewSweeper.enqueue(filepath.Dir(src.resolved))
+	enqueueCacheSweep(filepath.Dir(src.resolved))
 	go func() {
 		_, err := sharePreviews.ensure(context.Background(), src, sharePreviewThumbSuffix, sharePreviews.genThumb)
 		if err != nil {

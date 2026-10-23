@@ -5,12 +5,12 @@
 package httpd
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/drakkan/sftpgo/v2/internal/logger"
@@ -22,67 +22,21 @@ const (
 	previewSweepInterval = 10 * time.Minute
 	// leftovers of interrupted jobs older than this are removed
 	previewSweepTempAge = time.Hour
-	previewSweepQueue   = 1000
 )
 
-var previewSweeper = newPreviewCacheSweeper()
-
-type previewCacheSweeper struct {
-	mu        sync.Mutex
-	pending   map[string]bool
-	lastSwept map[string]time.Time
-	queue     chan string
-	once      sync.Once
-}
-
-func newPreviewCacheSweeper() *previewCacheSweeper {
-	return &previewCacheSweeper{
-		pending:   make(map[string]bool),
-		lastSwept: make(map[string]time.Time),
-		queue:     make(chan string, previewSweepQueue),
-	}
-}
-
-// enqueue asks for a check of the preview cache of a local folder, unless it is already queued
-// or was checked recently. It never blocks: with a full queue the request is dropped and the
-// folder is checked on a later visit
-func (s *previewCacheSweeper) enqueue(dir string) {
+// enqueueCacheSweep asks for a check of the preview cache of a local folder: a background
+// task, at most once every 10 minutes per folder
+func enqueueCacheSweep(dir string) {
 	if sharePreviews == nil || dir == "" {
 		return
 	}
-	s.once.Do(func() { go s.run() })
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pending[dir] || time.Since(s.lastSwept[dir]) < previewSweepInterval {
-		return
-	}
-	select {
-	case s.queue <- dir:
-		s.pending[dir] = true
-	default:
-	}
-}
-
-func (s *previewCacheSweeper) run() {
-	for dir := range s.queue {
-		removed := sweepPreviewCache(dir)
-		if removed > 0 {
-			logger.Debug(logSender, "", "preview cache of %q: removed %d stale files", dir, removed)
-		}
-		s.mu.Lock()
-		delete(s.pending, dir)
-		s.lastSwept[dir] = time.Now()
-		if len(s.lastSwept) > 10000 {
-			for d, t := range s.lastSwept {
-				if time.Since(t) > previewSweepInterval {
-					delete(s.lastSwept, d)
-				}
+	_, _ = tasks.submit("cache-sweep", dir, laneBackground, previewSweepInterval, 5*time.Minute,
+		func(_ context.Context) error {
+			if removed := sweepPreviewCache(dir); removed > 0 {
+				logger.Debug(logSender, "", "preview cache of %q: removed %d stale files", dir, removed)
 			}
-		}
-		s.mu.Unlock()
-		// stay in the background, browsing has priority on the disks
-		time.Sleep(200 * time.Millisecond)
-	}
+			return nil
+		})
 }
 
 // enqueuePreviewSweep queues the check of the preview cache of a listed folder
@@ -92,7 +46,7 @@ func enqueuePreviewSweep(connection *Connection, virtualDir string) {
 	}
 	fs, resolved, err := connection.GetFsAndResolvedPath(virtualDir)
 	if err == nil && vfs.IsLocalOsFs(fs) {
-		previewSweeper.enqueue(resolved)
+		enqueueCacheSweep(resolved)
 	}
 }
 

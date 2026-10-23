@@ -10,7 +10,9 @@
 #                                 backup (needed when the failed version migrated the schema)
 #
 # Host settings come from dpm/.env (see dpm/.env.example). Backups go to BACKUP_PATH,
-# default: the parent of DATA_PATH + /backups.
+# default: the parent of DATA_PATH + /backups. Everything is also logged to the journal
+# (journalctl -t sftpgo-deploy). After a good deploy the oldest rollback images, backups and
+# build cache are pruned (KEEP_ROLLBACKS, KEEP_BACKUPS, BUILD_CACHE_KEEP in dpm/.env).
 set -euo pipefail
 
 DPM_DIR=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -20,8 +22,9 @@ CONTAINER=sftpgo
 cd "$DPM_DIR"
 
 ts() { date '+%F %T'; }
-log() { echo "$(ts) $*"; }
-die() { echo "$(ts) ERROR: $*" >&2; exit 1; }
+# one place for logs: the journal, next to the server's own log (tag sftpgo)
+log() { echo "$(ts) $*"; logger -t sftpgo-deploy -- "$*" || true; }
+die() { echo "$(ts) ERROR: $*" >&2; logger -t sftpgo-deploy -p user.err -- "ERROR: $*" || true; exit 1; }
 
 [ -f .env ] || die "dpm/.env is missing, copy dpm/.env.example and fill it in"
 set -a; . ./.env; set +a
@@ -31,6 +34,9 @@ set -a; . ./.env; set +a
 : "${SFTPGO_UID:?SFTPGO_UID must be set in dpm/.env}"
 : "${SFTPGO_GID:?SFTPGO_GID must be set in dpm/.env}"
 BACKUP_PATH=${BACKUP_PATH:-$(dirname "$DATA_PATH")/backups}
+KEEP_ROLLBACKS=${KEEP_ROLLBACKS:-3}
+KEEP_BACKUPS=${KEEP_BACKUPS:-20}
+BUILD_CACHE_KEEP=${BUILD_CACHE_KEEP:-20GB}
 DB="$DATA_PATH/sftpgo.db"
 
 ASSUME_YES=0
@@ -108,6 +114,22 @@ health_check() {
     [ "$ok" = 1 ]
 }
 
+# keep the disk from filling up deploy after deploy
+prune() {
+    local tag dir
+    docker images "$IMAGE" --format '{{.Tag}}' | grep '^rollback-' | sort -r | tail -n +$((KEEP_ROLLBACKS + 1)) |
+        while read -r tag; do
+            docker rmi "$IMAGE:$tag" >/dev/null && log "removed old rollback image $IMAGE:$tag"
+        done
+    find "$BACKUP_PATH" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended -regex '.*/[0-9]{8}-[0-9]{6}' |
+        sort -r | tail -n +$((KEEP_BACKUPS + 1)) |
+        while read -r dir; do
+            rm -rf -- "$dir" && log "removed old backup $dir"
+        done
+    # the build cache is shared by every image built on this host: keep the most recent part
+    docker builder prune -f --keep-storage "$BUILD_CACHE_KEEP" | tail -1 | sed "s/^/$(ts) build cache: /"
+}
+
 # compose names the stack "dpm"; a container left by an older stack name must go first
 remove_foreign_container() {
     local project
@@ -125,6 +147,22 @@ status)
     echo "schema version: $(schema_version "$DB")"
     echo "rollback images:"
     docker images "$IMAGE" --format '  {{.Repository}}:{{.Tag}}  {{.CreatedSince}}' | sort -r
+    if [ -f "$DATA_PATH/tasks-status.json" ]; then
+        python3 - "$DATA_PATH/tasks-status.json" <<'EOF'
+import json, sys
+s = json.load(open(sys.argv[1]))
+print(f"background tasks (status of {s['updated']}):")
+for lane, l in sorted(s["lanes"].items()):
+    print(f"  {lane}: {l['workers']} workers, {l['queued']} queued")
+for t in s.get("running") or []:
+    print(f"  running {t['key']} for {t['seconds']:.0f}s (waited {t['waited_seconds']:.0f}s)")
+for p in s.get("periodic") or []:
+    print(f"  every {p['interval']}: {p['kind']}, next {p['next']}")
+for kind, k in sorted((s.get("kinds") or {}).items()):
+    err = f", last error: {k['last_error'][:80]}" if k.get("last_error") else ""
+    print(f"  {kind}: {k['done']} done, {k['failed']} failed, {k['dropped']} dropped, avg {k['avg_seconds']:.2f}s{err}")
+EOF
+    fi
     exit 0
     ;;
 rollback)
@@ -196,6 +234,7 @@ docker compose up -d --no-build
 if health_check; then
     log "deploy OK"
     [ "$OLD_SCHEMA" != "$NEW_SCHEMA" ] && log "the schema moved $OLD_SCHEMA -> $NEW_SCHEMA: a rollback also needs --restore-db $BACKUP_DIR/sftpgo.db"
+    prune
     exit 0
 fi
 ROLLBACK="dpm/deploy.sh --rollback rollback-$STAMP"

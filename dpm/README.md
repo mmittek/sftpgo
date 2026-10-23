@@ -31,7 +31,7 @@ live only in `dpm/.env`, which is ignored by git; `dpm/.env.example` lists every
 5. Schedule the certificate fallback in the deploy user's crontab:
 
    ```
-   17 4 * * * <repo>/dpm/scripts/renew-cert-fallback.sh >> <log file> 2>&1
+   17 4 * * * <repo>/dpm/scripts/renew-cert-fallback.sh 2>&1 | logger -t sftpgo-cert
    ```
 
 6. Optional: link the extension script, `ln -s <repo>/dpm/scripts/apply-extensions.py ~/bin/sftpgo-apply-extensions`.
@@ -58,6 +58,23 @@ dpm/deploy.sh
 5. Warns when transfers were logged in the last 10 minutes, since the restart interrupts them.
 6. Restarts the container and checks it: running, version, web client on 443, admin UI on the
    VPN address, ffmpeg, ffprobe and exiftool present, no schema errors in the log.
+
+After a good deploy it prunes what deploys leave behind: rollback images beyond the newest 3,
+database backups beyond the newest 20 and the Docker build cache above 20 GB (`KEEP_ROLLBACKS`,
+`KEEP_BACKUPS`, `BUILD_CACHE_KEEP` in `dpm/.env`).
+
+## Logs
+
+Everything logs to one place, the host journal, which rotates and caps its own files (no
+external log rotation, nothing to stall):
+
+```
+journalctl -t sftpgo -t sftpgo-deploy -t sftpgo-cert
+```
+
+`sftpgo` is the server (Docker journald driver in non-blocking mode: if the journal stalls, log
+lines are dropped instead of freezing the server), `sftpgo-deploy` is `deploy.sh`,
+`sftpgo-cert` the certificate fallback. Nothing is written inside the container.
 
 `--yes` skips the questions. `--status` shows the running version, the schema version and the
 rollback images.

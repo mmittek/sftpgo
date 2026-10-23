@@ -183,10 +183,15 @@ func deleteShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	share, shareErr := dataprovider.ShareExists(shareID, claims.Username)
 	err = dataprovider.DeleteShare(shareID, claims.Username, util.GetIPFromRemoteAddress(r.RemoteAddr), claims.Role)
 	if err != nil {
 		sendAPIResponse(w, r, err, "", getRespStatus(err))
 		return
+	}
+	if shareErr == nil {
+		// fork: the cache of a share exists for sharing, it goes with it
+		clearShareCacheLater(share)
 	}
 	sendAPIResponse(w, r, err, "Share deleted", http.StatusOK)
 }
@@ -516,7 +521,9 @@ func (s *httpdServer) checkPublicShare(w http.ResponseWriter, r *http.Request, v
 	if err != nil {
 		statusCode := getRespStatus(err)
 		if statusCode == http.StatusNotFound {
-			err = util.NewI18nError(errors.New("share does not exist"), util.I18nError404Message)
+			// fork: dead shares are deleted, so a missing share may have expired, reached its
+			// download limit or been removed
+			err = util.NewI18nError(errors.New("share does not exist"), i18nShareUnavailable)
 		}
 		renderError(err, "", statusCode)
 		return share, nil, err

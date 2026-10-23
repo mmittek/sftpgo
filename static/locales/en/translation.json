@@ -476,7 +476,8 @@
         "link_uncompressed_desc": "If the share consists of a single file, it can also be downloaded uncompressed",
         "upload_desc": "You can upload one or more files to the shared directory",
         "expired_desc": "This share is no longer accessible because it has expired",
-        "invalid_path": "The shared directory is missing or not accessible"
+        "invalid_path": "The shared directory is missing or not accessible",
+        "unavailable": "This link is no longer available. It may have expired, reached its download limit, or been removed."
     },
     "select2": {
         "no_results": "No results found",
