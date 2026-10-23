@@ -331,6 +331,11 @@ explicit grant from the SFTPGo Team (support@sftpgo.com).
                                 if (!icon) {
                                     return html;
                                 }
+                                if (row["kind"] === 'folder' && row["paths"] && row["paths"].length === 1) {
+                                    // a folder share opens that folder in the file browser
+                                    const href = '{{.FilesURL}}?path=' + encodeURIComponent(row["paths"][0]);
+                                    html = `<a href="${href}" class="text-gray-800 text-hover-primary">${html}</a>`;
+                                }
                                 return `<div class="d-flex align-items-center">
                                             <i class="ki-duotone ${icon} fs-2x text-primary me-3">
                                                 <span class="path1"></span>
