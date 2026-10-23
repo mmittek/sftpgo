@@ -1,3 +1,51 @@
+# SFTPGo - DPM Edition
+
+A fork of [drakkan/sftpgo](https://github.com/drakkan/sftpgo) that runs the DPM Underground LIVE file server (`files.drpolishmatt.com`). It tracks upstream `main` and adds the share and delivery features listed below. The upstream README follows after the fork notes.
+
+## DPM Edition modifications
+
+### Shares
+
+- **Default share name.** A share created for a single file is named after the file. A share created for a single folder gets a name from a per-user template (admin > Users > Profile > "Default folder share name"), where `{parent}` is the parent folder name and `{name}` the folder name. The default template is `{parent} - {name}`, so `Band/Mix` becomes `Band - Mix`.
+- **Default share max tokens.** A per-user setting (admin > Users > Profile) for the use limit of new shares. `0` means unlimited.
+- **Default expiration.** New shares use SFTPGo's built-in per-user "Default shares expiration".
+- **Shares list.** A Created column, sorted newest first.
+- **Hidden entries stay out of public shares.** Names starting with a dot (`.cache`, `.tmp`, `.DS_Store`, macOS `._` files) and everything inside dot folders are not listed, not added to zip downloads and cannot be downloaded through a public share, even when requested by path. The owner still sees them over SFTP, WebDAV and the logged-in web client. This is done by merging a hide rule for `.*` into the owner's pattern rules on every share connection (`internal/httpd/sharehidden.go`).
+
+### Media previews for single-file shares
+
+The share page (`/web/client/pubshares/<id>/download`) of a single video, audio or image file shows a player and the file details (`internal/httpd/sharepreview.go`, `templates/webclient/sharedownload.html`).
+
+- **Video:** the browser's native player streams the original file, with range requests for seeking and no autoplay. Details: container, duration, dimensions, codec, bit rate, size.
+- **Audio:** a waveform you can click to seek, drawn from per-bucket loudness (RMS), over the browser's audio player. The player streams a 128 kbps MP3 preview (stereo when the source is stereo); Download gets the original. Details: format, duration, channels, sample rate, bit depth (lossless sources), size.
+- **Image:** a scaled preview up to 1600 px; Download gets the full-resolution original.
+- **Layout:** the file name and a Download button with the file size in the header, the preview on a dark stage, details as chips, and the direct download link in a read-only field with a Copy button.
+- **Link previews in chat apps:** the page carries Open Graph and Twitter tags (title, details, thumbnail), so Discord, iMessage, Slack and others unfold a pasted link into a card. Playable video is advertised only for H.264 files up to 100 MB.
+- **Branding:** the audio waveform card and the waveform on the page show the current branding logo in the bottom-right corner, applied at request time, so a logo change in the admin branding settings takes effect at once.
+- **Generated files** live in a `.cache` folder next to the shared file (`<file name>.probe.json`, `.thumb.jpg`, `.peaks.json`, `.preview.mp3`). They are created with ffmpeg on first view, regenerated when missing or when the source file changes, and never block the download.
+- **Share uses:** preview requests honor expiry, passwords and permissions but do not count as share uses, since a player sends many range requests while seeking.
+- Enabled with `SHARE_PREVIEWS=true`. ffmpeg is installed in the Docker image.
+
+### Web client and API
+
+- **No deletions over HTTP.** Every file and folder DELETE route of the REST API and the web client returns 403, and the Delete actions are removed from the web client file browser. SFTP deletions and share uploads are unaffected.
+- **Admin user page.** The fork-only user settings live on the user page only (not in the template block shared with the group page).
+
+### Deployment (`rack/`)
+
+- `rack/docker-compose.yml` builds the image from this repository, with every host-specific value in `rack/.env` (see `rack/.env.example`): ACME domain and email, the VPN address the admin UI binds to, host paths and the run-as user.
+- The admin UI (port 8081) listens only on the VPN address; the HTTPS binding on 443 serves the web client only. Port 80 is published for ACME certificate renewal.
+- `rack/scripts/apply-extensions.py` pushes `rack/allowed-extensions.conf` to all users through the REST API; `rack/scripts/renew-cert-fallback.sh` is a fallback certificate renewal.
+
+### Keeping up with upstream
+
+- Rebase only the fork commits onto upstream `main`: `git rebase --onto upstream/main <old merge-base>`. A plain `git rebase <tag>` replays upstream development commits.
+- Track upstream `main`, not release tags: this deployment's database schema is already newer than the latest release (schema 36 versus 33 for v2.7.6), and releases refuse to open it.
+- Before deploying, test schema migrations on a copy of the database with `sftpgo initprovider` in a throwaway container, back up the database, and keep the previous image tagged for rollback.
+- Fork code lives in its own files where possible (`sharepreview.go`, `sharehidden.go`) to keep rebases clean. Unit tests for the fork features are in `internal/httpd/internal_test.go` (`TestGetDefaultShareName`, `TestSharePreviewPeaksAndDuration`, `TestHideDotEntriesInShares`).
+
+---
+
 # SFTPGo
 
 [![CI Status](https://github.com/drakkan/sftpgo/workflows/CI/badge.svg)](https://github.com/drakkan/sftpgo/workflows/CI/badge.svg)
