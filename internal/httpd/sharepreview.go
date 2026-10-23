@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"image"
@@ -47,7 +48,7 @@ const (
 	// version of the generated assets, bump it to regenerate every preview after changing a recipe
 	sharePreviewAssetsVersion = "3"
 	// version of the probe alone: adding details redoes only the small probe files
-	sharePreviewProbeVersion = "4"
+	sharePreviewProbeVersion = "5"
 	sharePreviewCacheDir     = ".cache"
 	sharePreviewProbeSuffix  = ".probe.json"
 	sharePreviewThumbSuffix  = ".thumb.jpg"
@@ -136,6 +137,9 @@ type sharePreviewProbe struct {
 	Camera      string `json:"camera"`
 	Lens        string `json:"lens"`
 	Orientation int    `json:"orientation"`
+	// video only: frames per second and what wrote the file (camera, editor, ffmpeg)
+	FrameRate float64 `json:"frame_rate"`
+	Source    string  `json:"source"`
 	// the source this probe and the other cached assets were made from
 	SourceSize   int64  `json:"source_size"`
 	SourceMtime  int64  `json:"source_mtime"`
@@ -292,13 +296,17 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 			BitsPerSample int    `json:"bits_per_sample"`
 			BitsPerRaw    string `json:"bits_per_raw_sample"`
 			BitRate       string `json:"bit_rate"`
+			FrameRate     string `json:"r_frame_rate"`
+			AvgFrameRate  string `json:"avg_frame_rate"`
 			Disposition   struct {
 				AttachedPic int `json:"attached_pic"`
 			} `json:"disposition"`
+			Tags map[string]string `json:"tags"`
 		} `json:"streams"`
 		Format struct {
-			Duration string `json:"duration"`
-			BitRate  string `json:"bit_rate"`
+			Duration string            `json:"duration"`
+			BitRate  string            `json:"bit_rate"`
+			Tags     map[string]string `json:"tags"`
 		} `json:"format"`
 	}
 	if err := json.Unmarshal(out, &res); err != nil {
@@ -315,6 +323,13 @@ func (c *sharePreviewCache) genProbe(ctx context.Context, src *sharePreviewSourc
 				probe.VideoBitRate, _ = strconv.ParseInt(s.BitRate, 10, 64)
 				if probe.VideoBitRate == 0 {
 					probe.VideoBitRate, _ = strconv.ParseInt(res.Format.BitRate, 10, 64)
+				}
+				probe.FrameRate = parseFrameRate(s.FrameRate)
+				if probe.FrameRate == 0 {
+					probe.FrameRate = parseFrameRate(s.AvgFrameRate)
+				}
+				if src.kind == sharePreviewVideo {
+					probe.Camera, probe.Lens, probe.Source = describeVideoOrigin(src.resolved, res.Format.Tags, s.Tags)
 				}
 			}
 		case "audio":
@@ -344,6 +359,112 @@ func (c *sharePreviewCache) writeProbe(src *sharePreviewSource, probe sharePrevi
 		return err
 	}
 	return writeFileAtomic(c.path(src, sharePreviewProbeSuffix), data)
+}
+
+// parseFrameRate reads ffprobe rates like "24000/1001"
+func parseFrameRate(rate string) float64 {
+	num, den, ok := strings.Cut(rate, "/")
+	n, errN := strconv.ParseFloat(num, 64)
+	if !ok || errN != nil {
+		return 0
+	}
+	d, errD := strconv.ParseFloat(den, 64)
+	if errD != nil || d == 0 {
+		return 0
+	}
+	return n / d
+}
+
+// describeVideoOrigin finds the camera, the lens and what wrote a video file: Sony keeps the
+// camera in the XML sidecar next to the clip, DJI and phones in the container tags, editors
+// and ffmpeg sign the container as its encoder
+func describeVideoOrigin(file string, formatTags, streamTags map[string]string) (camera, lens, source string) {
+	tag := func(tags map[string]string, key string) string {
+		for k, v := range tags {
+			if strings.EqualFold(k, key) {
+				return strings.TrimSpace(v)
+			}
+		}
+		return ""
+	}
+	encoder := tag(formatTags, "encoder")
+	streamEncoder := tag(streamTags, "encoder")
+	lowerEncoder := strings.ToLower(encoder)
+	camera, lens = readSonySidecar(file)
+	if camera == "" {
+		if appleModel := tag(formatTags, "com.apple.quicktime.model"); appleModel != "" {
+			camera = formatCamera(tag(formatTags, "com.apple.quicktime.make"), appleModel)
+		} else if strings.HasPrefix(lowerEncoder, "dji") {
+			camera = strings.ToUpper(encoder)
+		}
+	}
+	switch {
+	case strings.Contains(lowerEncoder, "davinci resolve"):
+		source = strings.TrimSpace(strings.TrimPrefix(encoder, "Blackmagic Design")) + " render"
+	case strings.HasPrefix(lowerEncoder, "lavf"):
+		source = "ffmpeg output"
+		if strings.HasPrefix(strings.ToLower(streamEncoder), "lavc") {
+			// "Lavc61.3.100 libx265": the video was encoded by ffmpeg, not only copied
+			if _, lib, ok := strings.Cut(streamEncoder, " "); ok {
+				source = "ffmpeg encode (" + lib + ")"
+			}
+		}
+	case strings.HasPrefix(lowerEncoder, "dji"),
+		strings.EqualFold(tag(formatTags, "major_brand"), "XAVC"),
+		encoder == "" && tag(formatTags, "com.apple.quicktime.model") != "":
+		source = "Camera original"
+	case encoder != "":
+		source = encoder
+	}
+	return camera, lens, source
+}
+
+// readSonySidecar reads the camera and lens from the XML Sony cameras write next to each clip
+// (C0001M01.XML, renamed with the clip as "<clip name>.XML")
+func readSonySidecar(file string) (camera, lens string) {
+	base := strings.TrimSuffix(file, filepath.Ext(file))
+	for _, ext := range []string{".XML", ".xml"} {
+		f, err := os.Open(base + ext)
+		if err != nil {
+			continue
+		}
+		defer f.Close()
+		decoder := xml.NewDecoder(io.LimitReader(f, 1<<20))
+		for {
+			token, err := decoder.Token()
+			if err != nil {
+				break
+			}
+			el, ok := token.(xml.StartElement)
+			if !ok {
+				continue
+			}
+			attr := func(name string) string {
+				for _, a := range el.Attr {
+					if a.Name.Local == name {
+						return strings.TrimSpace(a.Value)
+					}
+				}
+				return ""
+			}
+			switch el.Name.Local {
+			case "Device":
+				camera = formatCamera(attr("manufacturer"), attr("modelName"))
+			case "Lens":
+				lens = attr("modelName")
+			}
+		}
+		return camera, lens
+	}
+	return "", ""
+}
+
+// formatFrameRate prints 23.976, 29.97, 59.94 or 24 frames per second
+func formatFrameRate(rate float64) string {
+	if rate <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(math.Round(rate*1000)/1000, 'f', -1, 64) + " fps"
 }
 
 // genImageProbe reads size, camera and lens with exiftool, which understands camera raw files
@@ -810,8 +931,17 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
 		preview.OGVideo = probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize
-		details = append(append([]string{"Video", formatPreviewDuration(probe.Duration),
-			fmt.Sprintf("%dx%d", probe.Width, probe.Height)}, formatPreviewVideo(probe)...), details...)
+		videoDetails := []string{"Video", formatPreviewDuration(probe.Duration), fmt.Sprintf("%dx%d", probe.Width, probe.Height)}
+		if fps := formatFrameRate(probe.FrameRate); fps != "" {
+			videoDetails = append(videoDetails, fps)
+		}
+		videoDetails = append(videoDetails, formatPreviewVideo(probe)...)
+		for _, v := range []string{probe.Camera, probe.Lens, probe.Source} {
+			if v != "" {
+				videoDetails = append(videoDetails, v)
+			}
+		}
+		details = append(videoDetails, details...)
 	}
 	preview.Details = details[1:] // the page shows the kind as the file type chip instead
 	preview.FileType = strings.ToUpper(strings.TrimPrefix(path.Ext(src.name), "."))

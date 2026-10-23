@@ -4955,3 +4955,31 @@ func TestSharePreviewPhotoMetadata(t *testing.T) {
 	w, _ = parseImageSize(nil)
 	assert.Equal(t, 0, w)
 }
+
+func TestSharePreviewVideoOrigin(t *testing.T) {
+	assert.Equal(t, "23.976 fps", formatFrameRate(parseFrameRate("24000/1001")))
+	assert.Equal(t, "29.97 fps", formatFrameRate(parseFrameRate("30000/1001")))
+	assert.Equal(t, "24 fps", formatFrameRate(parseFrameRate("24/1")))
+	assert.Equal(t, "", formatFrameRate(parseFrameRate("0/0")))
+
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "Band - Center Static Unedited.MP4")
+	sidecar := `<?xml version="1.0"?><NonRealTimeMeta><Device manufacturer="Sony" modelName="ILME-FX30"/>` +
+		`<Lens modelName="18-50mm F2.8 DC DN"/></NonRealTimeMeta>`
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "Band - Center Static Unedited.XML"), []byte(sidecar), 0o644))
+	camera, lens, source := describeVideoOrigin(clip, map[string]string{"major_brand": "XAVC"}, nil)
+	assert.Equal(t, []string{"SONY ILME-FX30", "18-50mm F2.8 DC DN", "Camera original"}, []string{camera, lens, source})
+	_, _, source = describeVideoOrigin(clip, map[string]string{"encoder": "Lavf61.1.100"}, nil)
+	assert.Equal(t, "ffmpeg output", source)
+	_, _, source = describeVideoOrigin(filepath.Join(dir, "x.mp4"), map[string]string{"encoder": "Lavf61.1.100"},
+		map[string]string{"encoder": "Lavc61.3.100 libx265"})
+	assert.Equal(t, "ffmpeg encode (libx265)", source)
+	camera, _, source = describeVideoOrigin(filepath.Join(dir, "x.mp4"), map[string]string{"encoder": "DJI OsmoAction5 Pro"}, nil)
+	assert.Equal(t, []string{"DJI OSMOACTION5 PRO", "Camera original"}, []string{camera, source})
+	_, _, source = describeVideoOrigin(filepath.Join(dir, "x.mov"),
+		map[string]string{"encoder": "Blackmagic Design DaVinci Resolve Studio"}, map[string]string{"encoder": "H.264 NVIDIA"})
+	assert.Equal(t, "DaVinci Resolve Studio render", source)
+	camera, _, source = describeVideoOrigin(filepath.Join(dir, "x.mov"),
+		map[string]string{"com.apple.quicktime.make": "Apple", "com.apple.quicktime.model": "iPhone 15 Pro"}, nil)
+	assert.Equal(t, []string{"APPLE IPHONE 15 PRO", "Camera original"}, []string{camera, source})
+}
