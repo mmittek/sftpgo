@@ -38,6 +38,7 @@ import (
 	"github.com/drakkan/sftpgo/v2/internal/logger"
 	"github.com/drakkan/sftpgo/v2/internal/util"
 	"github.com/drakkan/sftpgo/v2/internal/vfs"
+	"github.com/rs/xid"
 )
 
 const (
@@ -120,6 +121,9 @@ type sharePreview struct {
 	MediaType   string
 	ThumbURL    string
 	PeaksURL    string
+	// the size of the thumbnail, link previews show the picture on first share when they know it
+	ThumbWidth  int
+	ThumbHeight int
 	Width       int
 	Height      int
 	OGVideo     bool
@@ -206,15 +210,24 @@ func (c *sharePreviewCache) ensure(ctx context.Context, src *sharePreviewSource,
 	if err := os.MkdirAll(filepath.Dir(p), 0o775); err != nil {
 		return "", err
 	}
-	jobName := src.key + suffix
-	if src.kind == sharePreviewAudio && suffix != sharePreviewProbeSuffix {
-		// one ffmpeg pass writes every audio asset
-		jobName = src.key + ".audio"
-	}
-	if err := c.run(ctx, jobName, func(ctx context.Context) error { return gen(ctx, src) }); err != nil {
+	if err := c.run(ctx, previewJobName(src, suffix), func(ctx context.Context) error { return gen(ctx, src) }); err != nil {
 		return "", err
 	}
 	return p, nil
+}
+
+// previewJobName groups the assets one generator writes: for audio, the waveform pass writes
+// the peaks and the waveform image, the mp3 has its own slower pass
+func previewJobName(src *sharePreviewSource, suffix string) string {
+	if src.kind == sharePreviewAudio {
+		switch suffix {
+		case sharePreviewThumbSuffix, sharePreviewPeaksSuffix:
+			return src.key + ".waveform"
+		case sharePreviewAudioSuffix:
+			return src.key + ".mp3"
+		}
+	}
+	return src.key + suffix
 }
 
 func (c *sharePreviewCache) probe(ctx context.Context, src *sharePreviewSource) (sharePreviewProbe, error) {
@@ -432,6 +445,17 @@ func readSonySidecar(file string) (camera, lens string) {
 	return "", ""
 }
 
+// fitInBox is the size of a picture scaled down to fit box x box, never enlarged
+func fitInBox(width, height, box int) (int, int) {
+	if width <= 0 || height <= 0 || (width <= box && height <= box) {
+		return width, height
+	}
+	if width >= height {
+		return box, int(math.Round(float64(height) * float64(box) / float64(width)))
+	}
+	return int(math.Round(float64(width) * float64(box) / float64(height))), box
+}
+
 // formatFrameRate prints 23.976, 29.97, 59.94 or 24 frames per second
 func formatFrameRate(rate float64) string {
 	if rate <= 0 {
@@ -528,8 +552,8 @@ func formatLens(v any) string {
 
 func (c *sharePreviewCache) genThumb(ctx context.Context, src *sharePreviewSource) error {
 	if src.kind == sharePreviewAudio {
-		// the waveform image comes out of the audio pass together with the peaks
-		return c.genAudio(ctx, src)
+		// the waveform image comes out of the waveform pass together with the peaks
+		return c.genWaveform(ctx, src)
 	}
 	box := 1600
 	if src.kind == sharePreviewVideo {
@@ -620,9 +644,9 @@ func (c *sharePreviewCache) genRawThumb(ctx context.Context, src *sharePreviewSo
 	return os.Rename(tmp, c.path(src, suffix))
 }
 
-// genAudio makes, in one decoding pass, the 128 kbps mp3 the page plays, the waveform peaks
-// and the waveform image used as thumbnail
-func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSource) error {
+// genWaveform decodes the audio once into the waveform peaks and the waveform image, the
+// picture link previews show: it only reads the file, so it is ready long before the mp3
+func (c *sharePreviewCache) genWaveform(ctx context.Context, src *sharePreviewSource) error {
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
 		return err
@@ -630,11 +654,7 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 	if !probe.HasAudio || probe.Duration <= 0 {
 		return errors.New("no audio stream")
 	}
-	tmpMedia := c.path(src, ".preview.tmp.mp3")
-	// mp3 carries at most two channels, mono sources stay mono
-	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
-		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", "file:"+tmpMedia,
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-i", "file:"+src.resolved,
 		"-map", "0:a:0", "-ac", "1", "-ar", strconv.Itoa(sharePreviewPeaksRate), "-f", "s16le", "pipe:1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -647,8 +667,7 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 	}
 	peaks := computePeaks(bufio.NewReaderSize(stdout, 1<<16), probe.Duration*sharePreviewPeaksRate, sharePreviewPeaks)
 	if err := cmd.Wait(); err != nil {
-		os.Remove(tmpMedia)
-		return fmt.Errorf("ffmpeg audio preview: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("ffmpeg waveform: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	data, err := json.Marshal(peaks)
 	if err != nil {
@@ -670,8 +689,26 @@ func (c *sharePreviewCache) genAudio(ctx context.Context, src *sharePreviewSourc
 		os.Remove(tmpThumb)
 		return err
 	}
-	if err := os.Rename(tmpThumb, c.path(src, sharePreviewThumbSuffix)); err != nil {
+	return os.Rename(tmpThumb, c.path(src, sharePreviewThumbSuffix))
+}
+
+// genAudioPreview encodes the 128 kbps mp3 the page plays, stereo when the source is
+func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePreviewSource) error {
+	probe, err := c.loadProbe(ctx, src)
+	if err != nil {
 		return err
+	}
+	if !probe.HasAudio {
+		return errors.New("no audio stream")
+	}
+	tmpMedia := c.path(src, ".preview.tmp.mp3")
+	// mp3 carries at most two channels, mono sources stay mono
+	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
+	out, err := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
+		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", "file:"+tmpMedia).CombinedOutput()
+	if err != nil {
+		os.Remove(tmpMedia)
+		return fmt.Errorf("ffmpeg audio preview: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return os.Rename(tmpMedia, c.path(src, sharePreviewAudioSuffix))
 }
@@ -997,6 +1034,14 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 	preview.FileType = strings.ToUpper(strings.TrimPrefix(path.Ext(src.name), "."))
 	preview.Size = util.ByteCountIEC(src.info.Size())
 	preview.Description = strings.Join(details, " | ")
+	switch src.kind {
+	case sharePreviewAudio:
+		preview.ThumbWidth, preview.ThumbHeight = 1200, 630
+	case sharePreviewVideo:
+		preview.ThumbWidth, preview.ThumbHeight = fitInBox(probe.Width, probe.Height, 1280)
+	default:
+		preview.ThumbWidth, preview.ThumbHeight = fitInBox(probe.Width, probe.Height, 1600)
+	}
 	return preview
 }
 
@@ -1135,7 +1180,7 @@ func (s *httpdServer) handleClientGetPreviewPeaks(w http.ResponseWriter, r *http
 		sendAPIResponse(w, r, nil, "Peaks are only available for audio", http.StatusNotFound)
 		return
 	}
-	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genAudio)
+	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genWaveform)
 }
 
 // handleClientPreviewPage opens a file of the logged-in file browser in the preview page, files
@@ -1328,7 +1373,7 @@ func (s *httpdServer) handleShareGetPreviewPeaks(w http.ResponseWriter, r *http.
 		sendAPIResponse(w, r, nil, "Peaks are only available for audio", http.StatusNotFound)
 		return
 	}
-	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genAudio)
+	s.serveSharePreviewAsset(w, r, src, sharePreviewPeaksSuffix, "application/json", sharePreviews.genWaveform)
 }
 
 // handleShareGetPreviewMedia serves what the page player loads: the 128 kbps mp3 for audio,
@@ -1351,7 +1396,7 @@ func (s *httpdServer) servePreviewMedia(w http.ResponseWriter, r *http.Request, 
 ) {
 	switch src.kind {
 	case sharePreviewAudio:
-		s.serveSharePreviewAsset(w, r, src, sharePreviewAudioSuffix, "audio/mpeg", sharePreviews.genAudio)
+		s.serveSharePreviewAsset(w, r, src, sharePreviewAudioSuffix, "audio/mpeg", sharePreviews.genAudioPreview)
 	case sharePreviewImage:
 		s.serveSharePreviewAsset(w, r, src, sharePreviewThumbSuffix, "image/jpeg", sharePreviews.genThumb)
 	default:
@@ -1416,4 +1461,53 @@ func serveInlineMedia(w http.ResponseWriter, r *http.Request, connection *Connec
 		}
 	}
 	return 0, nil
+}
+
+// warmSharePreview queues the preview of a single-file share as background tasks, when the
+// share is created or edited and on the hourly pass, so the picture link previews fetch is
+// ready before the link is posted: crawlers give up after a few seconds. Dead shares are skipped
+func warmSharePreview(share dataprovider.Share) {
+	if sharePreviews == nil || len(share.Paths) != 1 || isDeadShare(&share) {
+		return
+	}
+	if _, ok := sharePreviewExts[strings.ToLower(path.Ext(share.Paths[0]))]; !ok {
+		return
+	}
+	user, err := dataprovider.GetUserWithGroupSettings(share.Username, "")
+	if err != nil {
+		return
+	}
+	user.Filters.FilePatterns = hideDotEntriesInShares(user.Filters.FilePatterns)
+	conn := newConnection(common.NewBaseConnection(xid.New().String(), common.ProtocolHTTPShare, "", "", user), nil, nil)
+	src, err := getPreviewSource(conn, share.Paths[0])
+	if err != nil || src == nil {
+		return
+	}
+	assets := []struct {
+		suffix string
+		gen    func(context.Context, *sharePreviewSource) error
+	}{{sharePreviewProbeSuffix, sharePreviews.genProbe}, {sharePreviewThumbSuffix, sharePreviews.genThumb}}
+	if src.kind == sharePreviewAudio {
+		assets = append(assets, struct {
+			suffix string
+			gen    func(context.Context, *sharePreviewSource) error
+		}{sharePreviewAudioSuffix, sharePreviews.genAudioPreview})
+	}
+	for _, asset := range assets {
+		p := sharePreviews.path(src, asset.suffix)
+		if _, err := os.Stat(p); err == nil {
+			continue
+		}
+		gen := asset.gen
+		_, _ = tasks.submit("preview", previewJobName(src, asset.suffix), laneBackground, 0, 10*time.Minute,
+			func(ctx context.Context) error {
+				if _, err := os.Stat(p); err == nil {
+					return nil
+				}
+				if err := os.MkdirAll(filepath.Dir(p), 0o775); err != nil {
+					return err
+				}
+				return gen(ctx, src)
+			})
+	}
 }

@@ -1614,6 +1614,7 @@ func (s *httpdServer) handleClientAddSharePost(w http.ResponseWriter, r *http.Re
 	}
 	err = dataprovider.AddShare(share, claims.Username, ipAddr, claims.Role)
 	if err == nil {
+		warmSharePreview(*share)
 		http.Redirect(w, r, webClientSharesPath, http.StatusSeeOther)
 	} else {
 		s.renderAddUpdateSharePage(w, r, share, util.NewI18nError(err, util.I18nErrorShareGeneric), true)
@@ -1683,6 +1684,7 @@ func (s *httpdServer) handleClientUpdateSharePost(w http.ResponseWriter, r *http
 	}
 	err = dataprovider.UpdateShare(updatedShare, claims.Username, ipAddr, claims.Role)
 	if err == nil {
+		warmSharePreview(*updatedShare)
 		http.Redirect(w, r, webClientSharesPath, http.StatusSeeOther)
 	} else {
 		s.renderAddUpdateSharePage(w, r, updatedShare, util.NewI18nError(err, util.I18nErrorShareGeneric), false)

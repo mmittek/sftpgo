@@ -119,6 +119,7 @@ func addShare(w http.ResponseWriter, r *http.Request) {
 		sendAPIResponse(w, r, err, "", getRespStatus(err))
 		return
 	}
+	warmSharePreview(share)
 	w.Header().Add("Location", fmt.Sprintf("%s/%s", userSharesPath, url.PathEscape(share.ShareID)))
 	w.Header().Add("X-Object-ID", share.ShareID)
 	sendAPIResponse(w, r, nil, "Share created", http.StatusCreated)
@@ -171,6 +172,7 @@ func updateShare(w http.ResponseWriter, r *http.Request) {
 		sendAPIResponse(w, r, err, "", getRespStatus(err))
 		return
 	}
+	warmSharePreview(updatedShare)
 	sendAPIResponse(w, r, nil, "Share updated", http.StatusOK)
 }
 

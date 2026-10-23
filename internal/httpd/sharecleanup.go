@@ -101,6 +101,8 @@ func removeDeadSharesOf(username string) {
 			dead = append(dead, shares[idx])
 		} else {
 			livePaths = append(livePaths, shares[idx].Paths...)
+			// link previews must be ready before a crawler asks
+			warmSharePreview(shares[idx])
 		}
 	}
 	for _, share := range dead {
