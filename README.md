@@ -11,7 +11,14 @@ A fork of [drakkan/sftpgo](https://github.com/drakkan/sftpgo) that runs the DPM 
 - **Default expiration.** New shares use SFTPGo's built-in per-user "Default shares expiration".
 - **Shares list.** A Created column, sorted newest first.
 - **Folder shares: Download all (.zip).** A button on the folder share page and the zip link in a read-only field with a Copy button.
-- **Zips without compression.** Every web zip download (the share zip link, a selection in a folder share or in the web client, the REST API) stores the files without compressing them. The zip is built while it streams, nothing is prepared first, and storing runs as fast as the disks deliver; media files do not shrink anyway, and the zips are for keeping files organized.
+- **Resumable zips without a zip file.** Every web zip download (the share zip link, a selection in a folder share or in the web client, the REST API) is assembled on the fly from the original files and never written anywhere (`internal/httpd/resumablezip.go`):
+  - files are stored without compression (media does not shrink, the zips are for keeping files organized), so it streams as fast as the disks deliver;
+  - the layout is fixed (zip64 for every entry, names sorted per folder, folders dated by their newest file, `.cache` left out), so the size is known before the first byte: downloads show a real size and time remaining;
+  - `Range` and `If-Range` are honored with an ETag built from every name, size and modification time: an interrupted download resumes at any byte with identical bytes, and a folder that changed in between gets a fresh full download instead;
+  - CRC-32 checksums are computed while files stream and saved with a checkpoint every 64 MB in the folder's `.cache` (`<file name>.zipcrc.json`), so a resume rereads at most 64 MB; without saved checksums the missing ones are computed by reading the files;
+  - resumes and HEAD requests do not count as share uses.
+
+  Tested with Info-ZIP unzip, Python, 7-Zip and libarchive; zip64 tested with a 4.5 GiB file.
 - **Hidden entries stay out of public shares.** Names starting with a dot (`.cache`, `.tmp`, `.DS_Store`, macOS `._` files) and everything inside dot folders are not listed, not added to zip downloads and cannot be downloaded through a public share, even when requested by path. The owner still sees them over SFTP, WebDAV and the logged-in web client. This is done by merging a hide rule for `.*` into the owner's pattern rules on every share connection (`internal/httpd/sharehidden.go`).
 
 ### Media previews for single-file shares
