@@ -1,0 +1,196 @@
+// Cleanup of the preview caches (fork addition): folders seen while browsing or through shares
+// are queued, and a background worker removes the cached previews whose original file was
+// deleted, renamed or changed, so the ".cache" folders do not grow forever.
+
+package httpd
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/drakkan/sftpgo/v2/internal/logger"
+	"github.com/drakkan/sftpgo/v2/internal/vfs"
+)
+
+const (
+	// a folder is checked at most once in this interval
+	previewSweepInterval = 10 * time.Minute
+	// leftovers of interrupted jobs older than this are removed
+	previewSweepTempAge = time.Hour
+	previewSweepQueue   = 1000
+)
+
+var previewSweeper = newPreviewCacheSweeper()
+
+type previewCacheSweeper struct {
+	mu        sync.Mutex
+	pending   map[string]bool
+	lastSwept map[string]time.Time
+	queue     chan string
+	once      sync.Once
+}
+
+func newPreviewCacheSweeper() *previewCacheSweeper {
+	return &previewCacheSweeper{
+		pending:   make(map[string]bool),
+		lastSwept: make(map[string]time.Time),
+		queue:     make(chan string, previewSweepQueue),
+	}
+}
+
+// enqueue asks for a check of the preview cache of a local folder, unless it is already queued
+// or was checked recently. It never blocks: with a full queue the request is dropped and the
+// folder is checked on a later visit
+func (s *previewCacheSweeper) enqueue(dir string) {
+	if sharePreviews == nil || dir == "" {
+		return
+	}
+	s.once.Do(func() { go s.run() })
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending[dir] || time.Since(s.lastSwept[dir]) < previewSweepInterval {
+		return
+	}
+	select {
+	case s.queue <- dir:
+		s.pending[dir] = true
+	default:
+	}
+}
+
+func (s *previewCacheSweeper) run() {
+	for dir := range s.queue {
+		removed := sweepPreviewCache(dir)
+		if removed > 0 {
+			logger.Debug(logSender, "", "preview cache of %q: removed %d stale files", dir, removed)
+		}
+		s.mu.Lock()
+		delete(s.pending, dir)
+		s.lastSwept[dir] = time.Now()
+		if len(s.lastSwept) > 10000 {
+			for d, t := range s.lastSwept {
+				if time.Since(t) > previewSweepInterval {
+					delete(s.lastSwept, d)
+				}
+			}
+		}
+		s.mu.Unlock()
+		// stay in the background, browsing has priority on the disks
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// enqueuePreviewSweep queues the check of the preview cache of a listed folder
+func enqueuePreviewSweep(connection *Connection, virtualDir string) {
+	if sharePreviews == nil {
+		return
+	}
+	fs, resolved, err := connection.GetFsAndResolvedPath(virtualDir)
+	if err == nil && vfs.IsLocalOsFs(fs) {
+		previewSweeper.enqueue(resolved)
+	}
+}
+
+// sweepPreviewCache removes, in <dir>/.cache, the previews whose source file is gone or has
+// changed since, and old leftovers of interrupted jobs. Only names written by the preview code
+// are considered: ".cache" is a common name and other tools may keep files there.
+// It returns the number of removed files
+func sweepPreviewCache(dir string) int {
+	cacheDir := filepath.Join(dir, sharePreviewCacheDir)
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	remove := func(name string) {
+		if err := os.Remove(filepath.Join(cacheDir, name)); err == nil {
+			removed++
+		}
+	}
+	// decide for every source from its probe before removing anything: removing a stale probe
+	// first would leave its other assets without the signature to check them against
+	probes := make(map[string]*sharePreviewProbe)
+	for _, entry := range entries {
+		if source, suffix, temp := splitPreviewAssetName(entry.Name()); source != "" && !temp &&
+			suffix == sharePreviewProbeSuffix {
+			var probe sharePreviewProbe
+			data, err := os.ReadFile(filepath.Join(cacheDir, entry.Name()))
+			if err == nil && json.Unmarshal(data, &probe) == nil {
+				probes[source] = &probe
+			} else {
+				probes[source] = nil // unreadable: the probe goes, the other assets are judged by time
+			}
+		}
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		name := entry.Name()
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		source, suffix, temp := splitPreviewAssetName(name)
+		if source == "" {
+			continue
+		}
+		if temp {
+			if time.Since(info.ModTime()) > previewSweepTempAge {
+				remove(name)
+			}
+			continue
+		}
+		sourceInfo, err := os.Stat(filepath.Join(dir, source))
+		if err != nil {
+			if os.IsNotExist(err) {
+				remove(name)
+			}
+			continue
+		}
+		probe, hasProbe := probes[source]
+		if !previewAssetIsCurrent(probe, hasProbe, suffix, info, sourceInfo) {
+			remove(name)
+		}
+	}
+	// gone when nothing is left in it
+	_ = os.Remove(cacheDir)
+	return removed
+}
+
+// previewAssetIsCurrent compares an asset with its source: through the source signature kept
+// in the probe when there is one, by modification time otherwise
+func previewAssetIsCurrent(probe *sharePreviewProbe, hasProbe bool, suffix string, asset, sourceInfo os.FileInfo) bool {
+	if hasProbe {
+		if probe == nil {
+			return suffix != sharePreviewProbeSuffix && !sourceInfo.ModTime().After(asset.ModTime())
+		}
+		return probe.SourceSize == sourceInfo.Size() && probe.SourceMtime == sourceInfo.ModTime().UnixNano() &&
+			probe.Version == sharePreviewAssetsVersion
+	}
+	return !sourceInfo.ModTime().After(asset.ModTime())
+}
+
+// splitPreviewAssetName splits "<source><suffix>" (or a temporary file of it) and returns an
+// empty source for names the preview code does not write
+func splitPreviewAssetName(name string) (source, suffix string, temp bool) {
+	for _, s := range sharePreviewSuffixes {
+		for _, tempEnd := range []string{".tmp", ".tmp.jpg"} {
+			if strings.HasSuffix(name, s+tempEnd) {
+				return strings.TrimSuffix(name, s+tempEnd), s, true
+			}
+		}
+		if strings.HasSuffix(name, s) && len(name) > len(s) {
+			return strings.TrimSuffix(name, s), s, false
+		}
+	}
+	// the audio preview is written as "<source>.preview.tmp.mp3" before the rename
+	if strings.HasSuffix(name, ".preview.tmp.mp3") {
+		return strings.TrimSuffix(name, ".preview.tmp.mp3"), sharePreviewAudioSuffix, true
+	}
+	return "", "", false
+}

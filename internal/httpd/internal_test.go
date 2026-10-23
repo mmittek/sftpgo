@@ -4983,3 +4983,47 @@ func TestSharePreviewVideoOrigin(t *testing.T) {
 		map[string]string{"com.apple.quicktime.make": "Apple", "com.apple.quicktime.model": "iPhone 15 Pro"}, nil)
 	assert.Equal(t, []string{"APPLE IPHONE 15 PRO", "Camera original"}, []string{camera, source})
 }
+
+func TestPreviewCacheSweep(t *testing.T) {
+	dir := t.TempDir()
+	cache := filepath.Join(dir, sharePreviewCacheDir)
+	assert.NoError(t, os.Mkdir(cache, 0o755))
+	write := func(name string, mtime time.Time) {
+		p := filepath.Join(dir, name)
+		assert.NoError(t, os.WriteFile(p, []byte("x"), 0o644))
+		assert.NoError(t, os.Chtimes(p, mtime, mtime))
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	write("kept.jpg", old)
+	write(".cache/kept.jpg.thumb-sm.jpg", time.Now())
+	write("changed.jpg", time.Now())
+	write(".cache/changed.jpg.thumb-sm.jpg", old)
+	write(".cache/deleted.mov.thumb.jpg", time.Now())
+	write(".cache/deleted.mov.probe.json", time.Now())
+	write(".cache/kept.jpg.thumb.jpg.tmp.jpg", old)
+	write(".cache/kept.jpg.thumb.jpg.tmp.jpg2", old)
+	write(".cache/notes.txt", old)
+	// a probe whose source signature no longer matches drops every asset of that source
+	write("resized.dng", old)
+	info, err := os.Stat(filepath.Join(dir, "resized.dng"))
+	assert.NoError(t, err)
+	probe, _ := json.Marshal(sharePreviewProbe{SourceSize: info.Size() + 1, SourceMtime: info.ModTime().UnixNano(),
+		Version: sharePreviewAssetsVersion})
+	assert.NoError(t, os.WriteFile(filepath.Join(cache, "resized.dng.probe.json"), probe, 0o644))
+	write(".cache/resized.dng.thumb.jpg", time.Now())
+
+	assert.Equal(t, 6, sweepPreviewCache(dir))
+	entries, err := os.ReadDir(cache)
+	assert.NoError(t, err)
+	var left []string
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	assert.ElementsMatch(t, []string{"kept.jpg.thumb-sm.jpg", "kept.jpg.thumb.jpg.tmp.jpg2", "notes.txt"}, left)
+	// an empty cache folder goes away
+	for _, name := range left {
+		assert.NoError(t, os.Remove(filepath.Join(cache, name)))
+	}
+	sweepPreviewCache(dir)
+	assert.NoDirExists(t, cache)
+}

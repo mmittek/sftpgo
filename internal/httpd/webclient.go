@@ -1036,6 +1036,7 @@ func (s *httpdServer) handleShareGetDirContents(w http.ResponseWriter, r *http.R
 	defer common.Connections.Remove(connection.GetID())
 
 	lister, err := connection.ReadDir(name)
+	enqueuePreviewSweep(connection, name)
 	if err != nil {
 		sendAPIResponse(w, r, err, getI18NErrorString(err, util.I18nErrorDirListGeneric), getMappedStatusCode(err))
 		return
@@ -1254,6 +1255,7 @@ func (s *httpdServer) handleClientGetDirContents(w http.ResponseWriter, r *http.
 
 	name := connection.User.GetCleanedPath(r.URL.Query().Get("path"))
 	lister, err := connection.ReadDir(name)
+	enqueuePreviewSweep(connection, name)
 	if err != nil {
 		statusCode := getMappedStatusCode(err)
 		sendAPIResponse(w, r, err, i18nListDirMsg(statusCode), statusCode)

@@ -946,6 +946,7 @@ func (s *httpdServer) getSharePreview(r *http.Request, share *dataprovider.Share
 	if src.kind == sharePreviewAudio && !probe.HasAudio {
 		return nil
 	}
+	previewSweeper.enqueue(filepath.Dir(src.resolved))
 	go func() {
 		_, err := sharePreviews.ensure(context.Background(), src, sharePreviewThumbSuffix, sharePreviews.genThumb)
 		if err != nil {
