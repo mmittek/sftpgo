@@ -47,7 +47,7 @@ const (
 	// version of the generated assets, bump it to regenerate every preview after changing a recipe
 	sharePreviewAssetsVersion = "3"
 	// version of the probe alone: adding details redoes only the small probe files
-	sharePreviewProbeVersion = "3"
+	sharePreviewProbeVersion = "4"
 	sharePreviewCacheDir     = ".cache"
 	sharePreviewProbeSuffix  = ".probe.json"
 	sharePreviewThumbSuffix  = ".thumb.jpg"
@@ -402,25 +402,22 @@ func parseImageSize(v any) (int, int) {
 	return int(w), int(h)
 }
 
-// formatCamera turns "SONY" + "ILCE-7M5" into "Sony ILCE-7M5", without repeating the brand
-// when the model already carries it ("Canon" + "Canon EOS R5")
+// formatCamera returns the camera in capitals, so names read the same whatever case the
+// maker writes ("SONY ILCE-7M5", "CANON EOS R5"), without repeating the brand when the model
+// already carries it
 func formatCamera(brand, model string) string {
 	brand, model = strings.TrimSpace(brand), strings.TrimSpace(model)
 	if fields := strings.Fields(brand); len(fields) > 0 {
 		brand = fields[0] // "NIKON CORPORATION", "OLYMPUS IMAGING CORP."
 	}
-	// "SONY" reads better as "Sony", short acronyms like "DJI" stay as they are
-	if brand == strings.ToUpper(brand) && len(brand) > 3 {
-		brand = brand[:1] + strings.ToLower(brand[1:])
-	}
+	result := brand + " " + model
 	switch {
 	case model == "":
-		return brand
+		result = brand
 	case brand == "" || strings.HasPrefix(strings.ToLower(model), strings.ToLower(brand)):
-		return model
-	default:
-		return brand + " " + model
+		result = model
 	}
+	return strings.ToUpper(result)
 }
 
 func formatLens(v any) string {

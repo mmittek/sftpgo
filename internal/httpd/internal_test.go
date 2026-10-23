@@ -4937,10 +4937,12 @@ func TestHideDotEntriesInShares(t *testing.T) {
 }
 
 func TestSharePreviewPhotoMetadata(t *testing.T) {
-	assert.Equal(t, "Sony ILCE-7M5", formatCamera("SONY", "ILCE-7M5"))
-	assert.Equal(t, "Canon EOS R5", formatCamera("Canon", "Canon EOS R5"))
-	assert.Equal(t, "Nikon Z 8", formatCamera("NIKON CORPORATION", "Z 8"))
+	assert.Equal(t, "SONY ILCE-7M5", formatCamera("SONY", "ILCE-7M5"))
+	assert.Equal(t, "CANON EOS R5", formatCamera("Canon", "Canon EOS R5"))
+	assert.Equal(t, "NIKON Z 8", formatCamera("NIKON CORPORATION", "Z 8"))
 	assert.Equal(t, "DJI", formatCamera("DJI", ""))
+	assert.Equal(t, "FUJIFILM X-T5", formatCamera("FUJIFILM", "X-T5"))
+	assert.Equal(t, "APPLE IPHONE 15 PRO", formatCamera("Apple", "iPhone 15 Pro"))
 	assert.Equal(t, "", formatCamera("", ""))
 	assert.Equal(t, "Sony FE 24-105mm F4 G OSS", formatLens("Sony FE 24-105mm F4 G OSS"))
 	assert.Equal(t, "", formatLens("Unknown (00 0 0)"))
