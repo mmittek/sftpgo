@@ -67,8 +67,6 @@ const (
 	sharePreviewPeaks       = 1800
 	// sample rate of the decimated stream used to compute the waveform peaks
 	sharePreviewPeaksRate = 4000
-	// chat apps refuse to play large videos inline, above this size only the poster is advertised
-	sharePreviewOGVideoMaxSize = 100 * 1024 * 1024
 	// preview pages and assets of the logged-in file browser
 	webClientPreviewPath      = "/web/client/preview"
 	webClientPreviewThumbPath = "/web/client/preview/thumb"
@@ -822,8 +820,9 @@ const (
 	videoPreviewBox     = 720
 )
 
-// genVideoPreview renders the card video of a video that chat apps cannot play as it is (not
-// H.264 or above 100 MB): H.264 with the long side at most 720 pixels, never cropped, 128 kbps AAC, with the
+// genVideoPreview renders the copy every video plays from on share pages and in chat cards, the
+// original is only read: H.264 with the index up front so it starts at once, the long side at
+// most 720 pixels, never cropped, 128 kbps AAC, with the
 // bitrate chosen to stay under the size budget. The fastest encoder preset, quality comes
 // second. Videos too long for the lowest bitrate are cut
 func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePreviewSource) error {
@@ -833,9 +832,6 @@ func (c *sharePreviewCache) genVideoPreview(ctx context.Context, src *sharePrevi
 	}
 	if probe.Width == 0 || probe.Height == 0 {
 		return errors.New("no video stream")
-	}
-	if probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize {
-		return nil // the original is offered as it is
 	}
 	duration := math.Max(probe.Duration, 1)
 	limit := duration
@@ -1338,11 +1334,8 @@ func buildPreview(r *http.Request, src *sharePreviewSource, connection *Connecti
 	case sharePreviewVideo:
 		preview.MediaType = sharePreviewMediaTypes[strings.ToLower(path.Ext(src.name))]
 		switch {
-		case probe.VideoCodec == "h264" && src.info.Size() <= sharePreviewOGVideoMaxSize:
-			preview.OGVideo = true
-			preview.VideoURL, preview.VideoType = urls.Media, preview.MediaType
 		case urls.Video != "" && cardVideoReady(src):
-			// too large or a codec chat apps do not play: the small H.264 copy
+			// every video plays from its small H.264 copy, index up front: it starts at once
 			preview.OGVideo = true
 			preview.VideoURL, preview.VideoType = cardVideoURL(src, urls.Video), "video/mp4"
 			// ffmpeg rounds the scaled side to an even number
