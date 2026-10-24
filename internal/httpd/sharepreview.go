@@ -733,7 +733,7 @@ func (c *sharePreviewCache) genWaveform(ctx context.Context, src *sharePreviewSo
 	return os.Rename(tmpThumb, c.path(src, sharePreviewThumbSuffix))
 }
 
-// genAudioPreview encodes the mp3 the page plays and the card video carries: 256 kbps average
+// genAudioPreview encodes the mp3 the page plays and the card video carries: 192 kbps average
 // (variable) bitrate, stereo, 44.1 kHz
 func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePreviewSource) error {
 	probe, err := c.loadProbe(ctx, src)
@@ -745,7 +745,7 @@ func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePrevi
 	}
 	tmpMedia := c.path(src, ".preview.tmp.mp3")
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
-		"-map", "0:a:0", "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", "-abr", "1", "-b:a", "256k",
+		"-map", "0:a:0", "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", "-abr", "1", "-b:a", "192k",
 		"file:"+tmpMedia).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpMedia)
@@ -886,7 +886,7 @@ func stampWaveformText(img *image.RGBA, src *sharePreviewSource) {
 }
 
 // genCardVideo renders the audio as a small mp4, the branded waveform as a still picture at one
-// frame per second over the page player's 256 kbps mp3, so chats that play only videos inline (Discord) can
+// frame per second over the page player's 192 kbps mp3, so chats that play only videos inline (Discord) can
 // play the share in the link card. About 1 MB per minute
 func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewSource) error {
 	if src.kind == sharePreviewVideo {
@@ -968,7 +968,7 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	limit := duration
 	audioArgs := []string{"-c:a", "copy"}
 	if info, err := os.Stat(audioFile); err != nil || float64(info.Size())*8+16_000*duration > cardVideoBudget {
-		audioRate := min(256_000, float64(cardVideoBudget)/duration-16_000)
+		audioRate := min(192_000, float64(cardVideoBudget)/duration-16_000)
 		if audioRate < 64_000 {
 			audioRate = 64_000
 			limit = cardVideoBudget / (64_000 + 16_000)
