@@ -733,7 +733,8 @@ func (c *sharePreviewCache) genWaveform(ctx context.Context, src *sharePreviewSo
 	return os.Rename(tmpThumb, c.path(src, sharePreviewThumbSuffix))
 }
 
-// genAudioPreview encodes the 128 kbps mp3 the page plays, stereo when the source is
+// genAudioPreview encodes the mp3 the page plays and the card video carries: 256 kbps average
+// (variable) bitrate, stereo, 44.1 kHz
 func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePreviewSource) error {
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
@@ -743,10 +744,9 @@ func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePrevi
 		return errors.New("no audio stream")
 	}
 	tmpMedia := c.path(src, ".preview.tmp.mp3")
-	// mp3 carries at most two channels, mono sources stay mono
-	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
-		"-map", "0:a:0", "-ac", channels, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", "file:"+tmpMedia).CombinedOutput()
+		"-map", "0:a:0", "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", "-abr", "1", "-b:a", "256k",
+		"file:"+tmpMedia).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpMedia)
 		return fmt.Errorf("ffmpeg audio preview: %w: %s", err, strings.TrimSpace(string(out)))
@@ -886,7 +886,7 @@ func stampWaveformText(img *image.RGBA, src *sharePreviewSource) {
 }
 
 // genCardVideo renders the audio as a small mp4, the branded waveform as a still picture at one
-// frame per second over 112 kbps AAC, so chats that play only videos inline (Discord) can
+// frame per second over the page player's 256 kbps mp3, so chats that play only videos inline (Discord) can
 // play the share in the link card. About 1 MB per minute
 func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewSource) error {
 	if src.kind == sharePreviewVideo {
@@ -951,27 +951,42 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	barsWidth := float64((width - 2*waveformMargin) / (waveformBar + waveformGap) * (waveformBar + waveformGap))
 	progress := fmt.Sprintf("(%d+T/%f*%f)/%d", waveformMargin, duration, barsWidth, width)
 	filter := fmt.Sprintf("[0:v][1:v]blend=all_expr='if(lt(X/W\\,%s)\\,A\\,B)',format=yuv420p[v]", progress)
-	channels := strconv.Itoa(min(max(probe.Channels, 1), 2))
 	rate := strconv.Itoa(fps)
-	// the still picture costs little, the audio bitrate drops for long sets to stay in budget
-	// 112 kbps AAC sounds like a 128 kbps mp3 at a smaller size (the ffmpeg AAC encoder needs
-	// a little more than the usual 96 kbps for that)
-	audioRate := min(112_000, float64(cardVideoBudget)/duration-16_000)
-	limit := duration
-	if audioRate < 32_000 {
-		audioRate = 32_000
-		limit = cardVideoBudget / (32_000 + 16_000)
+	// the audio is the page player's mp3, copied as it is (an mp3 original plays as it is
+	// too); a set too long for the size budget gets a lower bitrate copy instead, the still
+	// picture costs little
+	audioFile := src.resolved
+	if !streamsOriginal(src) {
+		audioFile = c.path(src, sharePreviewAudioSuffix)
+		if _, err := os.Stat(audioFile); err != nil {
+			// the job holds the file, so the mp3 is made here instead of in a job of its own
+			if err := c.genAudioPreview(ctx, src); err != nil {
+				return err
+			}
+		}
 	}
-	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y",
+	limit := duration
+	audioArgs := []string{"-c:a", "copy"}
+	if info, err := os.Stat(audioFile); err != nil || float64(info.Size())*8+16_000*duration > cardVideoBudget {
+		audioRate := min(256_000, float64(cardVideoBudget)/duration-16_000)
+		if audioRate < 64_000 {
+			audioRate = 64_000
+			limit = cardVideoBudget / (64_000 + 16_000)
+		}
+		audioArgs = []string{"-c:a", "libmp3lame", "-b:a", strconv.Itoa(int(audioRate)), "-ac", "2", "-ar", "44100"}
+	}
+	args := append([]string{}, "-v", "error", "-y",
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[0],
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[1],
-		"-i", "file:"+src.resolved, "-filter_complex", filter, "-map", "[v]", "-map", "2:a:0",
+		"-i", "file:"+audioFile, "-filter_complex", filter, "-map", "[v]", "-map", "2:a:0",
 		"-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "30", "-r", rate,
 		// keyframes are most of the size of a still picture: one a minute
 		"-g", strconv.Itoa(60*fps),
-		"-c:a", "aac", "-b:a", strconv.Itoa(int(audioRate)), "-ac", channels, "-shortest",
-		"-t", strconv.FormatFloat(limit, 'f', 3, 64), "-fs", cardVideoHardLimit,
-		"-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo).CombinedOutput()
+	)
+	args = append(args, audioArgs...)
+	args = append(args, "-shortest", "-t", strconv.FormatFloat(limit, 'f', 3, 64), "-fs", cardVideoHardLimit,
+		"-movflags", "+faststart", "-f", "mp4", "file:"+tmpVideo)
+	out, err := mediaCommand(ctx, "ffmpeg", args...).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpVideo)
 		return fmt.Errorf("ffmpeg card video: %w: %s", err, strings.TrimSpace(string(out)))
@@ -1856,7 +1871,7 @@ func (s *httpdServer) handleShareGetPreviewVideo(w http.ResponseWriter, r *http.
 	s.serveSharePreviewAsset(w, r, src, sharePreviewCardVideoSuffix, "video/mp4", sharePreviews.genCardVideo)
 }
 
-// handleShareGetPreviewMedia serves what the page player loads: the 128 kbps mp3 for audio,
+// handleShareGetPreviewMedia serves what the page player loads: the 256 kbps mp3 for audio,
 // the original file for video and the scaled image for images. It does not count as a share use, since players
 // issue many range requests while seeking
 func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.Request) {
@@ -1869,7 +1884,7 @@ func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.
 	s.servePreviewMedia(w, r, src, connection, true)
 }
 
-// servePreviewMedia serves what the page player loads: the 128 kbps mp3 for audio, the original
+// servePreviewMedia serves what the page player loads: the 256 kbps mp3 for audio, the original
 // file for video and the scaled image for images. Share connections are registered here, the
 // logged-in ones already are
 func (s *httpdServer) servePreviewMedia(w http.ResponseWriter, r *http.Request, src *sharePreviewSource,
