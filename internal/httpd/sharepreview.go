@@ -734,7 +734,8 @@ func (c *sharePreviewCache) genWaveform(ctx context.Context, src *sharePreviewSo
 }
 
 // genAudioPreview encodes the mp3 the page plays and the card video carries: 192 kbps average
-// (variable) bitrate, stereo, 44.1 kHz
+// (variable) bitrate for stereo, 96 kbps for mono (the same quality per channel), 44.1 kHz.
+// Mono sources stay mono, stereo and multichannel ones are stereo
 func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePreviewSource) error {
 	probe, err := c.loadProbe(ctx, src)
 	if err != nil {
@@ -744,14 +745,25 @@ func (c *sharePreviewCache) genAudioPreview(ctx context.Context, src *sharePrevi
 		return errors.New("no audio stream")
 	}
 	tmpMedia := c.path(src, ".preview.tmp.mp3")
+	channels, rate := previewAudioLayout(probe)
 	out, err := mediaCommand(ctx, "ffmpeg", "-v", "error", "-y", "-i", "file:"+src.resolved,
-		"-map", "0:a:0", "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", "-abr", "1", "-b:a", "192k",
+		"-map", "0:a:0", "-ac", strconv.Itoa(channels), "-ar", "44100", "-c:a", "libmp3lame", "-abr", "1",
+		"-b:a", strconv.Itoa(rate),
 		"file:"+tmpMedia).CombinedOutput()
 	if err != nil {
 		os.Remove(tmpMedia)
 		return fmt.Errorf("ffmpeg audio preview: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return os.Rename(tmpMedia, c.path(src, sharePreviewAudioSuffix))
+}
+
+// previewAudioLayout returns the channels and bitrate of the audio previews: mono stays mono at
+// half the stereo bitrate
+func previewAudioLayout(probe sharePreviewProbe) (channels, bitrate int) {
+	if probe.Channels == 1 {
+		return 1, 96_000
+	}
+	return 2, 192_000
 }
 
 // cardVideoReady: the card video exists and is newer than the branding logo it shows, an older
@@ -968,12 +980,14 @@ func (c *sharePreviewCache) genCardVideo(ctx context.Context, src *sharePreviewS
 	limit := duration
 	audioArgs := []string{"-c:a", "copy"}
 	if info, err := os.Stat(audioFile); err != nil || float64(info.Size())*8+16_000*duration > cardVideoBudget {
-		audioRate := min(192_000, float64(cardVideoBudget)/duration-16_000)
+		channels, fullRate := previewAudioLayout(probe)
+		audioRate := min(float64(fullRate), float64(cardVideoBudget)/duration-16_000)
 		if audioRate < 64_000 {
 			audioRate = 64_000
 			limit = cardVideoBudget / (64_000 + 16_000)
 		}
-		audioArgs = []string{"-c:a", "libmp3lame", "-b:a", strconv.Itoa(int(audioRate)), "-ac", "2", "-ar", "44100"}
+		audioArgs = []string{"-c:a", "libmp3lame", "-b:a", strconv.Itoa(int(audioRate)), "-ac", strconv.Itoa(channels),
+			"-ar", "44100"}
 	}
 	args := append([]string{}, "-v", "error", "-y",
 		"-loop", "1", "-framerate", rate, "-i", "file:"+stills[0],
