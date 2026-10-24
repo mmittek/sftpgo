@@ -1871,7 +1871,7 @@ func (s *httpdServer) handleShareGetPreviewVideo(w http.ResponseWriter, r *http.
 	s.serveSharePreviewAsset(w, r, src, sharePreviewCardVideoSuffix, "video/mp4", sharePreviews.genCardVideo)
 }
 
-// handleShareGetPreviewMedia serves what the page player loads: the 256 kbps mp3 for audio,
+// handleShareGetPreviewMedia serves what the page player loads: the 192 kbps mp3 for audio,
 // the original file for video and the scaled image for images. It does not count as a share use, since players
 // issue many range requests while seeking
 func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.Request) {
@@ -1884,7 +1884,7 @@ func (s *httpdServer) handleShareGetPreviewMedia(w http.ResponseWriter, r *http.
 	s.servePreviewMedia(w, r, src, connection, true)
 }
 
-// servePreviewMedia serves what the page player loads: the 256 kbps mp3 for audio, the original
+// servePreviewMedia serves what the page player loads: the 192 kbps mp3 for audio, the original
 // file for video and the scaled image for images. Share connections are registered here, the
 // logged-in ones already are
 func (s *httpdServer) servePreviewMedia(w http.ResponseWriter, r *http.Request, src *sharePreviewSource,
